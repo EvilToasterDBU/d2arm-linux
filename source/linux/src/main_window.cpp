@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -20,6 +21,8 @@
 #include <QLocale>
 #include <QProcessEnvironment>
 #include <QKeyEvent>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -61,6 +64,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     makePathRow(trText("Wine WoW64 (bundled)", "Wine WoW64 (в комплекте)"), wine64_, QStringLiteral("wine"),
                 "Browse…", &MainWindow::browseWine);
     root->addLayout(form);
+
+    interfaceScale_ = new QComboBox(central);
+    interfaceScale_->addItem(trText("Automatic (D2DX)", "Автоматически (D2DX)"), 0);
+    interfaceScale_->addItem(trText("Smaller interface (600p)", "Интерфейс поменьше (600p)"), 600);
+    interfaceScale_->addItem(trText("Standard interface (540p)", "Обычный интерфейс (540p)"), 540);
+    interfaceScale_->addItem(trText("Larger interface (480p)", "Крупный интерфейс (480p)"), 480);
+    interfaceScale_->setToolTip(trText("Changes the game's render resolution and applies on the next launch.",
+                                       "Меняет разрешение рендеринга игры и применяется при следующем запуске."));
+    form->addRow(trText("In-game interface size", "Размер интерфейса игры"), interfaceScale_);
 
     auto *featureNote = new QLabel(trText(
         "Widescreen rendering uses the project's D2DX patches. A native gamepad profile is enabled while the game is focused.",
@@ -126,6 +138,9 @@ void MainWindow::restoreSettings() {
                          ? configuredWine
                          : (QFileInfo(bundledWine).isExecutable() ? bundledWine : QStandardPaths::findExecutable("wine")));
     gamepadEnabled_->setChecked(s.value("gamepadEnabled", true).toBool());
+    const int interfaceHeight = s.value("interfaceHeight", 0).toInt();
+    const int scaleIndex = interfaceScale_->findData(interfaceHeight);
+    interfaceScale_->setCurrentIndex(scaleIndex >= 0 ? scaleIndex : 0);
 }
 
 void MainWindow::saveSettings() const {
@@ -134,6 +149,7 @@ void MainWindow::saveSettings() const {
     s.setValue("box64", box64_->text());
     s.setValue("wine64", wine64_->text());
     s.setValue("gamepadEnabled", gamepadEnabled_->isChecked());
+    s.setValue("interfaceHeight", interfaceScale_->currentData().toInt());
 }
 
 QString MainWindow::gameDirectory() const { return QDir::cleanPath(gameDir_->text().trimmed()); }
@@ -182,6 +198,24 @@ QString MainWindow::prepareGameShadow(const QString &sourceDirectory) {
             throw std::runtime_error(QString("missing packaged file: %1").arg(relative).toStdString());
         if (QFileInfo::exists(to) && !QFile::remove(to)) throw std::runtime_error("cannot replace a game shadow file");
         if (!QFile::copy(from, to)) throw std::runtime_error(QString("cannot copy: %1").arg(relative).toStdString());
+    }
+    const int targetHeight = interfaceScale_->currentData().toInt();
+    if (targetHeight > 0) {
+        QFile config(QDir(base).filePath("d2dx.cfg"));
+        if (!config.open(QIODevice::ReadOnly | QIODevice::Text))
+            throw std::runtime_error("cannot read D2DX configuration");
+        QString contents = QString::fromUtf8(config.readAll());
+        config.close();
+        const QSize desktop = QGuiApplication::primaryScreen()->geometry().size();
+        const int gameHeight = qMin(targetHeight, qMin(desktop.width(), desktop.height()));
+        const int gameWidth = (qMax(desktop.width(), desktop.height()) * gameHeight /
+                               qMax(1, qMin(desktop.width(), desktop.height()))) & ~1;
+        const QString sizeLine = QString("size=[%1,%2]").arg(gameWidth).arg(gameHeight);
+        contents.replace("size=[-1,-1]", sizeLine);
+        const QByteArray updatedConfig = contents.toUtf8();
+        if (!config.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate) ||
+            config.write(updatedConfig) != updatedConfig.size())
+            throw std::runtime_error("cannot write D2DX configuration");
     }
     return base;
 }

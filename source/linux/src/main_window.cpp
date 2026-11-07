@@ -228,6 +228,8 @@ void MainWindow::launchGame() {
         env.insert("WINEARCH", "win64");
         env.insert("WINEDEBUG", "-all");
         env.insert("WINEDLLOVERRIDES", "mscoree,mshtml=d;glide3x=n,b");
+        env.insert("D2MOD_APP_PORT", "7958");
+        env.insert("D2MOD_CMD_PORT", "0");
         const QString wineRoot = runtimeFile("runtime/wine");
         const QString wineLib = QDir(wineRoot).filePath("lib");
         const QString wineUnixLib = QDir(wineLib).filePath("wine/x86_64-unix");

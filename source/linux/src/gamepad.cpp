@@ -148,6 +148,51 @@ void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
     }
 }
 
+struct FocusPoint { float x, y; };
+
+std::vector<FocusPoint> inventoryFocusPoints(const ModState &state) {
+    // Classic LoD panel: 320 x 432, centred vertically in the game view.
+    // Coordinates follow the player's annotated inventory, including empty slots.
+    const float left = state.gameWidth / 2.0f;
+    const float top = (state.gameHeight - 480) / 2.0f;
+    std::vector<FocusPoint> points;
+    const FocusPoint controls[] = {
+        {32,35}, {65,35}, {263,35}, {295,35}, // weapon set tabs
+        {46,104}, {276,104}, {162,33}, {219,47}, {162,121},
+        {46,207}, {105,191}, {162,191}, {219,191}, {276,207},
+        {34,403}, {92,403} // close and gold button
+    };
+    for (auto p : controls) points.push_back({left + p.x, top + p.y});
+    for (int row = 0; row < 4; ++row)
+        for (int col = 0; col < 10; ++col)
+            points.push_back({left + 31.0f + col * 29, top + 269.5f + row * 29});
+    return points;
+}
+
+FocusPoint inventoryFocus(const ModState &state, float x, float y, int direction = -1) {
+    const auto points = inventoryFocusPoints(state);
+    size_t current = 0;
+    double nearest = std::numeric_limits<double>::max();
+    for (size_t n = 0; n < points.size(); ++n) {
+        const double d = std::hypot(points[n].x - x, points[n].y - y);
+        if (d < nearest) nearest = d, current = n;
+    }
+    if (direction < 0) return points[current];
+    const int dx[] = {0,0,-1,1}, dy[] = {-1,1,0,0};
+    size_t next = current;
+    double best = std::numeric_limits<double>::max();
+    for (size_t n = 0; n < points.size(); ++n) {
+        const float xdiff = points[n].x - points[current].x;
+        const float ydiff = points[n].y - points[current].y;
+        const double along = xdiff * dx[direction] + ydiff * dy[direction];
+        const double across = std::abs(xdiff * dy[direction] - ydiff * dx[direction]);
+        if (along <= 1 || across > along * 2.5) continue;
+        const double score = along + across * 3.0;
+        if (score < best) best = score, next = n;
+    }
+    return points[next];
+}
+
 int openModSocket() {
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return -1;
@@ -421,6 +466,11 @@ void Gamepad::run() {
                     modState.skillTreeOpen() ? modState.gameHeight * 0.48 : modState.gameHeight * 0.50;
                 cursorX = std::clamp(static_cast<float>(gameX * sx), 0.0f, static_cast<float>(displayWidth - 1));
                 cursorY = std::clamp(static_cast<float>(gameY * sy), 0.0f, static_cast<float>(displayHeight - 1));
+                if (modState.uiFlags & (uint64_t{1} << 1)) {
+                    const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy);
+                    cursorX = focus.x * sx;
+                    cursorY = focus.y * sy;
+                }
                 XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
             }
             lastPanelSignature = panelSignature;
@@ -723,20 +773,18 @@ void Gamepad::run() {
                 else if (pointerMode) {
                     const float displayW = static_cast<float>(DisplayWidth(display, DefaultScreen(display)));
                     const float displayH = static_cast<float>(DisplayHeight(display, DefaultScreen(display)));
-                    const int step = std::max(20, static_cast<int>(displayH / (modState.inventoryGridOpen() ? 20 : modState.skillTreeOpen() ? 10 : 12)));
-                    const int cursorStep[4][2] = {{0,-step},{0,step},{-step,0},{step,0}};
-                    float left = 0.10f, right = 0.90f, top = 0.20f, bottom = 0.82f;
-                    if (modState.inventoryGridOpen()) {
-                        const bool stash = (modState.uiFlags & ((uint64_t{1} << 25) | (uint64_t{1} << 26))) != 0;
-                        left = stash ? 0.04f : 0.62f; right = stash ? 0.39f : 0.98f;
-                        top = 0.28f; bottom = 0.88f;
-                    } else if (modState.skillTreeOpen()) {
-                        left = 0.60f; right = 0.98f; top = 0.18f; bottom = 0.78f;
-                    } else if (modState.uiFlags & (uint64_t{1} << 2)) {
-                        left = 0.04f; right = 0.40f;
+                    if (stateFresh && (modState.uiFlags & (uint64_t{1} << 1))) {
+                        const float sx = displayW / std::max(1, modState.gameWidth);
+                        const float sy = displayH / std::max(1, modState.gameHeight);
+                        const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy, i);
+                        cursorX = focus.x * sx;
+                        cursorY = focus.y * sy;
+                    } else {
+                        // Unmapped panels use their native navigation until their
+                        // interactive controls have an explicit focus map.
+                        key(display, arrows[i], true);
+                        key(display, arrows[i], false);
                     }
-                    cursorX = std::clamp(cursorX + cursorStep[i][0], displayW * left, displayW * right);
-                    cursorY = std::clamp(cursorY + cursorStep[i][1], displayH * top, displayH * bottom);
                     XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
                 }
                 else if (layer2) {

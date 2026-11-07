@@ -1,0 +1,58 @@
+name: Build and Release d2arm-linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev libsdl2-dev libx11-dev libxtst-dev \
+            gcc-mingw-w64-i686 g++-mingw-w64-i686 binutils-mingw-w64-i686 curl unzip python3 librsvg2-bin
+      - name: Install AppImage tools
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage -o "$HOME/.local/bin/linuxdeploy"
+          curl -fL https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-aarch64.AppImage -o "$HOME/.local/bin/linuxdeploy-plugin-qt"
+          curl -fL https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage -o "$HOME/.local/bin/appimagetool"
+          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-qt" "$HOME/.local/bin/appimagetool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build AppImage
+        run: source/linux/build-appimage.sh
+      - name: Create checksum
+        run: sha256sum source/linux/dist/d2arm-linux-aarch64.AppImage > source/linux/dist/d2arm-linux-aarch64.AppImage.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: d2arm-linux-aarch64
+          path: |
+            source/linux/dist/d2arm-linux-aarch64.AppImage
+            source/linux/dist/d2arm-linux-aarch64.AppImage.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: d2arm-linux-aarch64
+          path: release-assets
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: d2arm-linux ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release-assets/d2arm-linux-aarch64.AppImage
+            release-assets/d2arm-linux-aarch64.AppImage.sha256

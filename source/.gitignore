@@ -5,5 +5,10 @@ local.properties
 *.apk
 winlator/app/src/main/assets/d2/
 winlator/app/src/release/assets/
+linux/build/
+linux/build-*/
+linux/AppDir/
+linux/assets/
+linux/dist/
 winlator/app/src/main/assets/licenses/*
 !winlator/app/src/main/assets/licenses/index.tsv

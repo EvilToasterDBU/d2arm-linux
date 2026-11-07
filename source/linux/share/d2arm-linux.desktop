@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=D2ARM Linux
+Comment=ARM64 launcher for Diablo II with D2Android features
+Exec=d2arm-linux
+Icon=d2arm-linux
+Categories=Game;RolePlaying;
+Terminal=false

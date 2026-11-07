@@ -357,3 +357,9 @@ D2Android uses free software: Wine, Box64, DXVK, Mesa (Turnip), D2DX, PlugY, ALS
 Their licenses are listed in the app (**Settings → Help and info → Licenses**, or **Licenses** on the start page) and
 in `THIRD-PARTY-NOTICES.txt` of every release. The source code of the LGPL/GPL parts we ship comes with every release
 (`…-lgpl-src.zip`, see `SOURCE-OFFER.txt`).
+
+### ARM64 Linux desktop port
+
+An early native `d2arm-linux` desktop launcher and ARM64 AppImage build are in [`source/linux`](source/linux/README.md).
+It reuses the D2Android mod and D2DX wide-screen patches, adds an SDL gamepad profile and Russian launcher strings.
+This first port slice currently expects Box64, Wine and an existing Diablo II installation on the host.

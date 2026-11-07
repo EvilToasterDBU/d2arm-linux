@@ -64,6 +64,7 @@ struct ModState {
     bool inventoryGridOpen() const {
         return (uiFlags & ((uint64_t{1} << 1) | (uint64_t{1} << 25) | (uint64_t{1} << 26))) != 0;
     }
+    bool quickSkillsOpen() const { return (uiFlags & (uint64_t{1} << 3)) != 0; }
     bool skillTreeOpen() const { return (uiFlags & (uint64_t{1} << 4)) != 0; }
     uint64_t panelSignature() const {
         constexpr std::array<unsigned, 21> panels = {1, 2, 3, 4, 5, 8, 9, 11, 12, 14, 15,
@@ -224,7 +225,6 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         x = static_cast<float>(x / aimLength);
         y = static_cast<float>(y / aimLength);
     }
-    const float height = std::max(1, state.gameHeight);
     const AimTarget *best = nullptr;
     double bestScore = std::numeric_limits<double>::max();
     double previousScore = std::numeric_limits<double>::max();
@@ -233,16 +233,18 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         const double dx = target.x - state.playerX;
         const double dy = target.y - state.playerY;
         const double distance = std::hypot(dx, dy);
-        const bool monster = target.type == 1 && target.kind != 7;
+        if (target.x < 0 || target.x >= state.gameWidth || target.y < 0 || target.y >= state.gameHeight - 48) continue;
         const bool npc = target.type == 1 && (target.flags & 16);
-        const double reach = height * 1.2;
-        if (distance > reach) continue;
-        const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
-        const bool special = monster && (target.flags & (1 | 2 | 8));
-        const double townNpcBias = state.inTown && npc ? 0.55 : 1.0;
+        const bool enemy = target.type == 1 && !npc && target.kind != 7;
+        const bool object = target.type == 2 || target.type == 5;
+        // World sprites keep their pixel size as render resolution changes.
+        // Undo the isometric projection for a short, roughly one-metre interaction radius.
+        const double interactionDistance = std::hypot(dx / 32.0, dy / 16.0);
+        if ((object || target.type == 4) && interactionDistance > 3.0) continue;
         if (target.type == 2 && target.kind == 0) continue;
-        const double categoryBias = target.type == 1 ? (npc ? 0.8 : 0.7) : target.type == 2 ? 1.25 : 1.1;
-        const double score = distance * (directional ? (1.5 - dot) : 1.0) * (special ? 0.9 : 1.0) * townNpcBias * categoryBias;
+        const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
+        const int priority = enemy ? 0 : object ? 1 : npc ? 2 : 3;
+        const double score = priority * 1000000.0 + distance * (directional ? (1.5 - dot) : 1.0);
         const uint64_t key = (uint64_t(target.type) << 32) | target.id;
         if (key == state.aimTargetKey) {
             previous = &target;
@@ -254,7 +256,8 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         }
     }
 
-    if (previous && previousScore <= bestScore * 1.15) best = previous;
+    if (previous && static_cast<int>(previousScore / 1000000.0) == static_cast<int>(bestScore / 1000000.0) &&
+        std::fmod(previousScore, 1000000.0) <= std::fmod(bestScore, 1000000.0) * 1.15) best = previous;
     state.aimTargetKey = best ? (uint64_t(best->type) << 32) | best->id : 0;
     return best;
 }
@@ -346,6 +349,7 @@ void Gamepad::run() {
     Uint32 launcherRepeatAt[4] = {0, 0, 0, 0};
     bool skillWasDown[4] = {false, false, false, false};
     bool runWasDown = false, swapWasDown = false;
+    bool potionWasDown[2] = {false, false};
     bool rtChordWasDown[4] = {false, false, false, false};
     uint8_t lastHintMode = 0xff, lastHintButtons = 0xff;
     auto clearGamepadHints = [&]() {
@@ -364,8 +368,8 @@ void Gamepad::run() {
     bool dpadArrowWasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
     float cursorY = DisplayHeight(display, DefaultScreen(display)) / 2.0f;
-    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение; цель выделяется автоматически; A — действие, LT+A — навык, LT+Y — дерево навыков; RT+A/B/X/Y — инвентарь/персонаж/задания/навыки.")
-                                : QStringLiteral("Gamepad: left stick moves; nearest target is highlighted; A interacts, LT+A casts, LT+Y opens skills; RT+A/B/X/Y open inventory/character/quests/skills."));
+    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение; цель выделяется автоматически; A — действие, LT+A — навык, LT+Y — быстрый выбор навыка; RT+A/B/X/Y — инвентарь/персонаж/задания/навыки.")
+                                : QStringLiteral("Gamepad: left stick moves; nearest target is highlighted; A interacts, LT+A casts, LT+Y opens the quick skill picker; RT+A/B/X/Y open inventory/character/quests/skills."));
 
     while (running_.load()) {
         SDL_Event event;
@@ -391,6 +395,7 @@ void Gamepad::run() {
                 launcherAWasDown = launcherBWasDown = false;
                 menuWasDown = inventoryWasDown = false;
                 for (bool &wasDown : skillWasDown) wasDown = false;
+                for (bool &wasDown : potionWasDown) wasDown = false;
                 XFlush(display);
                 SDL_GameControllerClose(controller);
                 controller = nullptr;
@@ -411,8 +416,8 @@ void Gamepad::run() {
                 const bool rightPanel = !stashPanel && ((modState.uiFlags & (uint64_t{1} << 1)) || modState.skillTreeOpen());
                 const bool leftPanel = stashPanel || (modState.uiFlags & ((uint64_t{1} << 2) | (uint64_t{1} << 15) |
                     (uint64_t{1} << 17) | (uint64_t{1} << 36)));
-                const double gameX = rightPanel ? modState.gameWidth * 0.78 : leftPanel ? modState.gameWidth * 0.22 : modState.gameWidth * 0.5;
-                const double gameY = modState.inventoryGridOpen() ? modState.gameHeight * 0.60 :
+                const double gameX = modState.quickSkillsOpen() ? modState.gameWidth - 90 : rightPanel ? modState.gameWidth * 0.78 : leftPanel ? modState.gameWidth * 0.22 : modState.gameWidth * 0.5;
+                const double gameY = modState.quickSkillsOpen() ? modState.gameHeight - 90 : modState.inventoryGridOpen() ? modState.gameHeight * 0.60 :
                     modState.skillTreeOpen() ? modState.gameHeight * 0.48 : modState.gameHeight * 0.50;
                 cursorX = std::clamp(static_cast<float>(gameX * sx), 0.0f, static_cast<float>(displayWidth - 1));
                 cursorY = std::clamp(static_cast<float>(gameY * sy), 0.0f, static_cast<float>(displayHeight - 1));
@@ -644,7 +649,16 @@ void Gamepad::run() {
 
         const bool menuDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_START);
         const bool inventoryDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_BACK);
-        const bool showItemsDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+        const bool showItemsDown = false;
+        const SDL_GameControllerButton potionButtons[2] = {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER};
+        for (int i = 0; i < 2; ++i) {
+            const bool down = SDL_GameControllerGetButton(controller, potionButtons[i]);
+            if (down && !potionWasDown[i] && stateFresh && modState.commandPort > 0) {
+                const uint8_t potion[2] = {static_cast<uint8_t>(i), 0};
+                sendModCommand(modSocket, modState.commandPort, 1, potion, sizeof(potion));
+            }
+            potionWasDown[i] = down;
+        }
         if (menuDown && !menuWasDown) key(display, XK_Escape, true), key(display, XK_Escape, false);
         if (inventoryDown && !inventoryWasDown) {
             const KeySym action = layer2 ? XK_Tab : XK_i;
@@ -660,7 +674,7 @@ void Gamepad::run() {
         const KeySym firstRow[4] = {XK_F1, XK_F2, XK_F3, XK_F4};
         const KeySym secondRow[4] = {XK_F6, XK_F7, XK_F8, NoSymbol};
         for (int i = 0; i < 4; ++i) {
-            const bool down = SDL_GameControllerGetButton(controller, skillButtons[i]);
+            const bool down = i < 3 && SDL_GameControllerGetButton(controller, skillButtons[i]);
             if (down && !skillWasDown[i]) {
                 if (triggerDown && i < 4) {
                     // RT+A/B/X/Y were handled as game panel chords above.
@@ -671,8 +685,8 @@ void Gamepad::run() {
                     key(display, XK_Escape, true);
                     key(display, XK_Escape, false);
                 } else if (layer2 && i == 2) {
-                    key(display, XK_t, true);
-                    key(display, XK_t, false);
+                    key(display, XK_s, true);
+                    key(display, XK_s, false);
                 } else if (layer2 && i < 3 && stateFresh && modState.commandPort > 0 && modState.hotkeySkills[i + 4] != 0xffff) {
                     selectBoundSkill(modSocket, modState, i + 4);
                 } else if (i == 3 && layer2) {

@@ -75,8 +75,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     form->addRow(trText("In-game interface size", "Размер интерфейса игры"), interfaceScale_);
 
     auto *featureNote = new QLabel(trText(
-        "D2DX widescreen. Gamepad: left stick moves, nearby units are highlighted automatically, right stick steers aim, A interacts/attacks and LT+A casts. LT+Y opens the skill tree. Hold RT and press A/B/X/Y for inventory/character/quests/skills. In game panels, D-pad snaps between controls and A activates them.",
-        "Широкий экран работает через D2DX. Геймпад: левый стик — движение, ближайшие цели выделяются автоматически, правый стик наводит прицел, A — действие/атака, LT+A — применить навык. LT+Y открывает дерево навыков. Удерживайте RT и нажимайте A/B/X/Y, чтобы открыть инвентарь/персонажа/задания/навыки. В игровых окнах крестовина выбирает элементы, A активирует их."), central);
+        "D2DX widescreen. Gamepad: left stick moves, nearby units are highlighted automatically, right stick steers aim, A interacts/attacks and LT+A casts. LT+Y opens the quick skill picker. LB heals; RB restores mana. Hold RT and press A/B/X/Y for inventory/character/quests/skills. In game panels, D-pad snaps between controls and A activates them.",
+        "Широкий экран работает через D2DX. Геймпад: левый стик — движение, ближайшие цели выделяются автоматически, правый стик наводит прицел, A — действие/атака, LT+A — применить навык. LT+Y открывает быстрый выбор навыка. LB — лечение, RB — мана. Удерживайте RT и нажимайте A/B/X/Y, чтобы открыть инвентарь/персонажа/задания/навыки. В игровых окнах крестовина выбирает элементы, A активирует их."), central);
     featureNote->setWordWrap(true);
     root->addWidget(featureNote);
 

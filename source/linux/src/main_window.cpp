@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "save_storage.h"
 
 #include <QCoreApplication>
 #include <QApplication>
@@ -176,6 +177,9 @@ QString MainWindow::prepareGameShadow(const QString &sourceDirectory) {
         sourceCanonical == baseParentCanonical || baseParentCanonical.startsWith(sourceCanonical + QDir::separator()))
         throw std::runtime_error("the selected game folder overlaps the launcher data folder");
     if (QFileInfo(base).isSymLink()) throw std::runtime_error("the game shadow path must not be a symbolic link");
+    const QString saves = QDir::home().filePath("DiabloIIsaves");
+    preserveDiabloSaves({base, QDir(base).filePath("save"),
+                        QDir(sourceDirectory).filePath("save"), sourceDirectory}, saves);
     QDir old(base);
     if (old.exists() && !old.removeRecursively()) throw std::runtime_error("cannot clear the old game shadow");
     if (!QDir().mkpath(base)) throw std::runtime_error("cannot create the game shadow directory");
@@ -185,11 +189,14 @@ QString MainWindow::prepareGameShadow(const QString &sourceDirectory) {
     while (it.hasNext()) {
         const QString item = it.next();
         const QFileInfo info(item);
+        if (info.fileName().compare("save", Qt::CaseInsensitive) == 0 || isDiabloSaveFile(info.fileName())) continue;
         const QString target = QDir(base).filePath(info.fileName());
         if (!QFile::link(info.absoluteFilePath(), target))
             throw std::runtime_error(QString("cannot link game file: %1").arg(info.fileName()).toStdString());
     }
 
+    if (!QFile::link(saves, QDir(base).filePath("save")))
+        throw std::runtime_error("cannot link persistent save directory");
     const QStringList files = {"mod/D2Android.exe", "mod/d2android-mod.dll", "glide3x.dll", "d2dx.cfg"};
     for (const QString &relative : files) {
         const QString from = runtimeFile(relative);
@@ -299,7 +306,8 @@ void MainWindow::launchGame() {
         };
         const QString installKey = QStringLiteral("HKCU\\Software\\Blizzard Entertainment\\Diablo II");
         setWineValue(installKey, "InstallPath", "REG_SZ", windowsInstallPath);
-        setWineValue(installKey, "Save Path", "REG_SZ", windowsInstallPath);
+        const QString windowsSavePath = QStringLiteral("Z:") + QDir::toNativeSeparators(QDir::home().filePath("DiabloIIsaves"));
+        setWineValue(installKey, "Save Path", "REG_SZ", windowsSavePath);
         setWineValue(installKey, "Mini Panel", "REG_DWORD", "1");
         setWineValue(installKey + QStringLiteral("\\VideoConfig"), "Render", "REG_DWORD", "0");
         setWineValue("HKLM\\Software\\Blizzard Entertainment\\Diablo II", "InstallPath", "REG_SZ", windowsInstallPath);

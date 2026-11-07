@@ -219,6 +219,7 @@ void MainWindow::launchGame() {
         const QString prefix = QDir(appDataDirectory()).filePath("wine-prefix");
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("WINEPREFIX", prefix);
+        env.insert("WINEARCH", "win64");
         env.insert("WINEDEBUG", "-all");
         env.insert("WINEDLLOVERRIDES", "glide3x=n,b");
         const QString wineRoot = runtimeFile("runtime/wine");
@@ -233,6 +234,35 @@ void MainWindow::launchGame() {
         if (QFileInfo(runtimeFile("runtime/box64/bin/box64")).isExecutable() &&
             QFileInfo::exists(QDir(wineLib).filePath("wine")))
             env.insert("BOX64_LD_LIBRARY_PATH", bundledX64Libs + QLatin1Char(':') + wineUnixLib + QLatin1Char(':') + wineLib);
+
+        const QString windowsInstallPath = QStringLiteral("Z:") + QDir::toNativeSeparators(shadow);
+        auto setWineValue = [&](const QString &key, const QString &name, const QString &type, const QString &value) {
+            QProcess registry;
+            registry.setProcessEnvironment(env);
+            registry.setWorkingDirectory(shadow);
+            registry.setProgram(box);
+            registry.setArguments({wine, "reg.exe", "add", key, "/v", name, "/t", type, "/d", value, "/f"});
+            registry.start();
+            if (!registry.waitForStarted(5000))
+                throw std::runtime_error(QString("cannot start Wine registry setup: %1").arg(registry.errorString()).toStdString());
+            if (!registry.waitForFinished(60000)) {
+                registry.kill();
+                registry.waitForFinished();
+                throw std::runtime_error("Wine registry setup timed out");
+            }
+            const QString output = QString::fromLocal8Bit(registry.readAllStandardOutput() + registry.readAllStandardError()).trimmed();
+            if (!output.isEmpty()) appendLog(output);
+            if (registry.exitStatus() != QProcess::NormalExit || registry.exitCode() != 0)
+                throw std::runtime_error(output.isEmpty() ? "Wine registry setup failed" : output.toStdString());
+        };
+        const QString installKey = QStringLiteral("HKCU\\Software\\Blizzard Entertainment\\Diablo II");
+        setWineValue(installKey, "InstallPath", "REG_SZ", windowsInstallPath);
+        setWineValue(installKey, "Save Path", "REG_SZ", windowsInstallPath);
+        setWineValue(installKey, "Mini Panel", "REG_DWORD", "1");
+        setWineValue(installKey + QStringLiteral("\\VideoConfig"), "Render", "REG_DWORD", "0");
+        setWineValue("HKLM\\Software\\Blizzard Entertainment\\Diablo II", "InstallPath", "REG_SZ", windowsInstallPath);
+        setWineValue("HKLM\\Software\\Wow6432Node\\Blizzard Entertainment\\Diablo II", "InstallPath", "REG_SZ", windowsInstallPath);
+
         process_.setProcessEnvironment(env);
         process_.setWorkingDirectory(shadow);
         process_.setProgram(box);

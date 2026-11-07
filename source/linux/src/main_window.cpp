@@ -117,8 +117,14 @@ void MainWindow::restoreSettings() {
     gameDir_->setText(s.value("gameDirectory").toString());
     const QString bundledBox = runtimeFile("runtime/box64/bin/box64");
     const QString bundledWine = runtimeFile("runtime/wine/bin/wine");
-    box64_->setText(s.value("box64", QFileInfo(bundledBox).isExecutable() ? bundledBox : QStandardPaths::findExecutable("box64")).toString());
-    wine64_->setText(s.value("wine64", QFileInfo(bundledWine).isExecutable() ? bundledWine : QStandardPaths::findExecutable("wine")).toString());
+    const QString configuredBox = s.value("box64").toString();
+    const QString configuredWine = s.value("wine64").toString();
+    box64_->setText(QFileInfo(configuredBox).isExecutable()
+                        ? configuredBox
+                        : (QFileInfo(bundledBox).isExecutable() ? bundledBox : QStandardPaths::findExecutable("box64")));
+    wine64_->setText(QFileInfo(configuredWine).isExecutable()
+                         ? configuredWine
+                         : (QFileInfo(bundledWine).isExecutable() ? bundledWine : QStandardPaths::findExecutable("wine")));
     gamepadEnabled_->setChecked(s.value("gamepadEnabled", true).toBool());
 }
 

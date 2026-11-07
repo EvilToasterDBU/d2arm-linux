@@ -6,6 +6,7 @@
 #include <X11/extensions/XTest.h>
 
 #include <QThread>
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -44,6 +45,14 @@ void Gamepad::run() {
     }
     running_.store(true);
     SDL_GameController *controller = nullptr;
+    auto openController = [&](int deviceIndex) {
+        if (controller || !SDL_IsGameController(deviceIndex)) return;
+        controller = SDL_GameControllerOpen(deviceIndex);
+        if (controller) emit statusChanged((russian_ ? QStringLiteral("Геймпад подключён: %1") : QStringLiteral("Controller connected: %1"))
+                                           .arg(SDL_GameControllerName(controller)));
+    };
+    for (int i = 0; i < SDL_NumJoysticks() && !controller; ++i) openController(i);
+    Uint32 rescanAt = 0;
     bool moving = false, attack = false, skill = false, leftHeld = false;
     bool menuWasDown = false, inventoryWasDown = false, showItemsWasDown = false;
     bool launcherAWasDown = false, launcherBWasDown = false;
@@ -51,40 +60,59 @@ void Gamepad::run() {
     Uint32 launcherRepeatAt[4] = {0, 0, 0, 0};
     bool skillWasDown[4] = {false, false, false, false};
     bool runWasDown = false, swapWasDown = false, triggerWasDown = false;
-    bool beltWasDown[4] = {false, false, false, false};
+    bool dpadWasDown[4] = {false, false, false, false};
+    bool dpadLayer2WasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
     float cursorY = DisplayHeight(display, DefaultScreen(display)) / 2.0f;
-    emit statusChanged(russian_ ? QStringLiteral("Геймпад: стик — движение, A — атака, LB — названия, X/B/Y/RB — F1–F4, LT — второй ряд.")
-                                : QStringLiteral("Gamepad ready: stick moves, A attacks, LB shows names, X/B/Y/RB select F1–F4, LT switches rows."));
+    emit statusChanged(russian_ ? QStringLiteral("Управление: левый стик — движение, A — атака, крестовина — меню, LT+крестовина — зелья, X/B/Y/RB — навыки.")
+                                : QStringLiteral("Controls: left stick moves, A attacks, D-pad navigates, LT+D-pad uses potions, X/B/Y/RB select skills."));
 
     while (running_.load()) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_CONTROLLERDEVICEADDED && !controller) {
-                controller = SDL_GameControllerOpen(event.cdevice.which);
-                if (controller) emit statusChanged((russian_ ? QStringLiteral("Геймпад подключён: %1") : QStringLiteral("Controller connected: %1"))
-                                                    .arg(SDL_GameControllerName(controller)));
+                openController(event.cdevice.which);
             } else if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller &&
                        SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)) == event.cdevice.which) {
                 mouseButton(display, 1, false);
                 mouseButton(display, 3, false);
+                if (showItemsWasDown) key(display, XK_Alt_L, false);
+                const KeySym arrows[4] = {XK_Up, XK_Down, XK_Left, XK_Right};
+                for (int i = 0; i < 4; ++i) {
+                    if (dpadWasDown[i] && !dpadLayer2WasDown[i]) key(display, arrows[i], false);
+                    dpadWasDown[i] = dpadLayer2WasDown[i] = false;
+                }
+                showItemsWasDown = false;
+                leftHeld = skill = moving = attack = false;
+                XFlush(display);
                 SDL_GameControllerClose(controller);
                 controller = nullptr;
                 emit statusChanged(russian_ ? QStringLiteral("Геймпад отключён.") : QStringLiteral("Controller disconnected."));
             }
         }
 
+        if (!controller && SDL_GetTicks() >= rescanAt) {
+            for (int i = 0; i < SDL_NumJoysticks() && !controller; ++i) openController(i);
+            rescanAt = SDL_GetTicks() + 1000;
+        }
         if (!controller) {
             QThread::msleep(15);
             continue;
         }
         if (launcherMode_.load()) {
-            if (leftHeld || skill) {
+            if (leftHeld || skill || showItemsWasDown) {
                 mouseButton(display, 1, false);
                 mouseButton(display, 3, false);
-                moving = attack = skill = leftHeld = false;
-                XFlush(display);
+                if (showItemsWasDown) key(display, XK_Alt_L, false);
+                showItemsWasDown = false;
             }
+            const KeySym arrows[4] = {XK_Up, XK_Down, XK_Left, XK_Right};
+            for (int i = 0; i < 4; ++i) {
+                if (dpadWasDown[i] && !dpadLayer2WasDown[i]) key(display, arrows[i], false);
+                dpadWasDown[i] = dpadLayer2WasDown[i] = false;
+            }
+            moving = attack = skill = leftHeld = false;
+            XFlush(display);
             const Uint32 now = SDL_GetTicks();
             const SDL_GameControllerButton navButtons[4] = {SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
                 SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT};
@@ -119,26 +147,40 @@ void Gamepad::run() {
             continue;
         }
         if (!enabled_.load()) {
-            if (leftHeld || skill) {
+            if (leftHeld || skill || showItemsWasDown) {
                 mouseButton(display, 1, false);
                 mouseButton(display, 3, false);
-                moving = attack = skill = leftHeld = false;
-                XFlush(display);
+                if (showItemsWasDown) key(display, XK_Alt_L, false);
+                showItemsWasDown = false;
             }
+            const KeySym arrows[4] = {XK_Up, XK_Down, XK_Left, XK_Right};
+            for (int i = 0; i < 4; ++i) {
+                if (dpadWasDown[i] && !dpadLayer2WasDown[i]) key(display, arrows[i], false);
+                dpadWasDown[i] = dpadLayer2WasDown[i] = false;
+            }
+            moving = attack = skill = leftHeld = false;
+            XFlush(display);
             QThread::msleep(16);
             continue;
         }
 
         const Sint16 lx = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
         const Sint16 ly = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
-        const float x = std::abs(lx) > 9000 ? lx / 32767.0f : 0.0f;
-        const float y = std::abs(ly) > 9000 ? ly / 32767.0f : 0.0f;
+        auto stickAxis = [](Sint16 axis) {
+            constexpr float deadzone = 0.22f;
+            const float value = axis / 32767.0f;
+            const float magnitude = std::abs(value);
+            if (magnitude <= deadzone) return 0.0f;
+            return std::copysign((magnitude - deadzone) / (1.0f - deadzone), value);
+        };
+        const float x = stickAxis(lx);
+        const float y = stickAxis(ly);
         const bool moveNow = x != 0 || y != 0;
         if (moveNow) {
-            cursorX += x * 10.0f;
-            cursorY += y * 10.0f;
-            cursorX = std::fmax(0, std::fmin(cursorX, DisplayWidth(display, DefaultScreen(display)) - 1));
-            cursorY = std::fmax(0, std::fmin(cursorY, DisplayHeight(display, DefaultScreen(display)) - 1));
+            const int screenWidth = DisplayWidth(display, DefaultScreen(display));
+            const int screenHeight = DisplayHeight(display, DefaultScreen(display));
+            cursorX = screenWidth * 0.5f + x * std::min(screenWidth * 0.22f, 420.0f);
+            cursorY = screenHeight * 0.5f + y * std::min(screenHeight * 0.22f, 300.0f);
             XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
         }
         moving = moveNow;
@@ -183,13 +225,22 @@ void Gamepad::run() {
         if (swapNow && !swapWasDown) key(display, XK_w, true), key(display, XK_w, false);
         runWasDown = runNow;
         swapWasDown = swapNow;
-        const SDL_GameControllerButton buttons[4] = {SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
-            SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_UP};
+        const SDL_GameControllerButton buttons[4] = {SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
+            SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT};
+        const KeySym arrows[4] = {XK_Up, XK_Down, XK_Left, XK_Right};
         const KeySym beltKeys[4] = {XK_1, XK_2, XK_3, XK_4};
+        const bool layer2Now = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
         for (int i = 0; i < 4; ++i) {
             const bool down = SDL_GameControllerGetButton(controller, buttons[i]);
-            if (down && !beltWasDown[i]) key(display, beltKeys[i], true), key(display, beltKeys[i], false);
-            beltWasDown[i] = down;
+            const bool modifierChanged = down && dpadWasDown[i] && layer2Now != dpadLayer2WasDown[i];
+            if (modifierChanged && !dpadLayer2WasDown[i]) key(display, arrows[i], false);
+            if (down && (!dpadWasDown[i] || modifierChanged)) {
+                if (layer2Now) key(display, beltKeys[i], true), key(display, beltKeys[i], false);
+                else key(display, arrows[i], true);
+            }
+            if (!down && dpadWasDown[i] && !dpadLayer2WasDown[i]) key(display, arrows[i], false);
+            dpadWasDown[i] = down;
+            dpadLayer2WasDown[i] = down && layer2Now;
         }
         XFlush(display);
         QThread::msleep(16);
@@ -197,6 +248,11 @@ void Gamepad::run() {
 
     if (leftHeld) mouseButton(display, 1, false);
     if (skill) mouseButton(display, 3, false);
+    if (showItemsWasDown) key(display, XK_Alt_L, false);
+    const KeySym arrows[4] = {XK_Up, XK_Down, XK_Left, XK_Right};
+    for (int i = 0; i < 4; ++i) {
+        if (dpadWasDown[i] && !dpadLayer2WasDown[i]) key(display, arrows[i], false);
+    }
     XFlush(display);
     if (controller) SDL_GameControllerClose(controller);
     XCloseDisplay(display);

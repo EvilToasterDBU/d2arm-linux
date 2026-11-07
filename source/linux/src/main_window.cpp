@@ -262,6 +262,8 @@ void MainWindow::launchGame() {
         setWineValue(installKey + QStringLiteral("\\VideoConfig"), "Render", "REG_DWORD", "0");
         setWineValue("HKLM\\Software\\Blizzard Entertainment\\Diablo II", "InstallPath", "REG_SZ", windowsInstallPath);
         setWineValue("HKLM\\Software\\Wow6432Node\\Blizzard Entertainment\\Diablo II", "InstallPath", "REG_SZ", windowsInstallPath);
+        setWineValue("HKCU\\Software\\Wine\\AppDefaults\\Game.exe", "Version", "REG_SZ", "win7");
+        setWineValue("HKCU\\Software\\Wine\\AppDefaults\\D2Android.exe", "Version", "REG_SZ", "win7");
 
         process_.setProcessEnvironment(env);
         process_.setWorkingDirectory(shadow);

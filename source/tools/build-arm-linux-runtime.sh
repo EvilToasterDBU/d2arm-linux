@@ -6,9 +6,9 @@ LINUX_DIR="$(cd "$SCRIPT_DIR/../linux" && pwd)"
 ASSET_DIR="$LINUX_DIR/assets/runtime"
 WORK_DIR="${D2_RUNTIME_BUILD_DIR:-$LINUX_DIR/build/runtime}"
 BOX64_VERSION="v0.4.4"
-WINE_VERSION="11.21"
+WINE_VERSION="10.0"
 WINE_ARCHIVE="wine-${WINE_VERSION}-amd64-wow64.tar.xz"
-WINE_SHA256="33f3c5b56b1deb8f6725539ea006f27b5d781b3b4ae6a8a1f492d8af4fb9dc83"
+WINE_SHA256="aeebbbf239e548f0136f1cd72a2e109dd9a572a8f703da3c09fa40d74d5c255f"
 
 for tool in cmake git curl tar sha256sum; do
   command -v "$tool" >/dev/null || { echo "Missing runtime build tool: $tool" >&2; exit 1; }

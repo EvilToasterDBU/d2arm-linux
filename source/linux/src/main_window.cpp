@@ -224,6 +224,7 @@ void MainWindow::launchGame() {
         const QString wineRoot = runtimeFile("runtime/wine");
         const QString wineLib = QDir(wineRoot).filePath("lib");
         const QString wineUnixLib = QDir(wineLib).filePath("wine/x86_64-unix");
+        const QString bundledX64Libs = runtimeFile("runtime/box64/usr/lib/box64-x86_64-linux-gnu");
         const QString box64Lib = runtimeFile("runtime/box64/lib");
         const QString box64MultiarchLib = runtimeFile("runtime/box64/lib/aarch64-linux-gnu");
         QStringList hostLibPaths = {box64Lib, box64MultiarchLib};
@@ -231,7 +232,7 @@ void MainWindow::launchGame() {
         env.insert("LD_LIBRARY_PATH", hostLibPaths.join(QLatin1Char(':')));
         if (QFileInfo(runtimeFile("runtime/box64/bin/box64")).isExecutable() &&
             QFileInfo::exists(QDir(wineLib).filePath("wine")))
-            env.insert("BOX64_LD_LIBRARY_PATH", wineUnixLib + QLatin1Char(':') + wineLib);
+            env.insert("BOX64_LD_LIBRARY_PATH", bundledX64Libs + QLatin1Char(':') + wineUnixLib + QLatin1Char(':') + wineLib);
         process_.setProcessEnvironment(env);
         process_.setWorkingDirectory(shadow);
         process_.setProgram(box);

@@ -19,9 +19,9 @@ mkdir -p "$WORK_DIR" "$ASSET_DIR/box64" "$ASSET_DIR/wine"
 
 git clone --depth 1 --branch "$BOX64_VERSION" https://github.com/ptitSeb/box64.git "$WORK_DIR/box64-src"
 cmake -S "$WORK_DIR/box64-src" -B "$WORK_DIR/box64-build" -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX="$ASSET_DIR/box64" -DARM64=ON -DARM_DYNAREC=ON
+  -DCMAKE_INSTALL_PREFIX=/ -DARM64=ON -DARM_DYNAREC=ON -DNO_CONF_INSTALL=ON
 cmake --build "$WORK_DIR/box64-build" --parallel
-cmake --install "$WORK_DIR/box64-build"
+DESTDIR="$ASSET_DIR/box64" cmake --install "$WORK_DIR/box64-build"
 
 curl -fL "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VERSION}/${WINE_ARCHIVE}" \
   -o "$WORK_DIR/$WINE_ARCHIVE"

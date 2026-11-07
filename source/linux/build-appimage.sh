@@ -30,6 +30,11 @@ cmake --build "$BUILD_DIR" --parallel
 APPDIR="$ROOT/AppDir"
 rm -rf "$APPDIR"
 DESTDIR="$APPDIR" cmake --install "$BUILD_DIR"
+for runtime_file in \
+  "$APPDIR/usr/share/d2arm-linux/assets/runtime/box64/bin/box64" \
+  "$APPDIR/usr/share/d2arm-linux/assets/runtime/wine/bin/wine"; do
+  [ -x "$runtime_file" ] || { echo "Bundled runtime file is not executable: $runtime_file" >&2; exit 1; }
+done
 cp "$ROOT/share/AppRun" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 rsvg-convert -w 256 -h 256 "$ROOT/share/d2arm-linux.svg" -o "$APPDIR/d2arm-linux.png"

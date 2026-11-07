@@ -2143,7 +2143,6 @@ typedef void (__fastcall *AddCell_t)(void*, void*);
 typedef void (__fastcall *DrawText_t)(const wchar_t*, int, int, int, int);
 typedef int (__fastcall *TextWidth_t)(const wchar_t*);
 typedef int (__fastcall *SetTextSize_t)(int);
-typedef void (__stdcall *DrawRectangle_t)(int, int, int, int, DWORD, DWORD);
 static GetLevel_t fGetLevel;
 static InitLevel_t fInitLevel;
 static RoomData_t fAddRoomData, fRemoveRoomData;
@@ -2156,7 +2155,6 @@ static AddCell_t fAddAutomapCell;
 static DrawText_t fDrawText;
 static TextWidth_t fGetTextWidth;
 static SetTextSize_t fSetTextSize;
-static DrawRectangle_t fDrawRectangle;
 
 static DWORD* objectTxtCount;
 static int mapAvailable, mapShown;
@@ -2252,7 +2250,6 @@ static void __cdecl automapDrawn(void);
 
 static void checkMapSites(void) {
     HMODULE win = GetModuleHandleA("D2Win.dll");
-    HMODULE gfx = GetModuleHandleA("D2Gfx.dll");
     fGetLevel = (GetLevel_t) GetProcAddress((HMODULE) common, (LPCSTR) ORD_GetLevel);
     fInitLevel = (InitLevel_t) GetProcAddress((HMODULE) common, (LPCSTR) ORD_InitLevel);
     fAddRoomData = (RoomData_t) GetProcAddress((HMODULE) common, (LPCSTR) ORD_AddRoomData);
@@ -2263,7 +2260,6 @@ static void checkMapSites(void) {
     fDrawText = win ? (DrawText_t) GetProcAddress(win, (LPCSTR) ORD_DrawText) : NULL;
     fGetTextWidth = win ? (TextWidth_t) GetProcAddress(win, (LPCSTR) ORD_GetTextWidth) : NULL;
     fSetTextSize = win ? (SetTextSize_t) GetProcAddress(win, (LPCSTR) ORD_SetTextSize) : NULL;
-    fDrawRectangle = gfx ? (DrawRectangle_t) GetProcAddress(gfx, MAKEINTRESOURCEA(10014)) : NULL;
     fRevealAutomapRoom = (RevealRoom_t) (client + RVA_RevealAutomapRoom);
     fNewAutomapCell = (NewCell_t) (client + RVA_NewAutomapCell);
     fAddAutomapCell = (AddCell_t) (client + RVA_AddAutomapCell);
@@ -2334,7 +2330,7 @@ static void checkMapSites(void) {
     FlushInstructionCache(GetCurrentProcess(), at, 5);
     mapAvailable = 1;
     logLine("map hack sites verified, automap drawing hooked (%lu objects)", (unsigned long) *objectTxtCount);
-    logLine(fDrawRectangle ? "gamepad button icon drawing sites verified" : "D2GFX rectangle drawing unavailable, gamepad hint icons disabled");
+    logLine("gamepad button hint text drawing sites verified");
 }
 
 
@@ -2778,23 +2774,25 @@ __attribute__((force_align_arg_pointer)) static void __cdecl automapDrawn(void) 
 }
 
 static void drawPadButton(const wchar_t* text, int x, int y, int w, int h, int scale, int selected) {
-    if (!fDrawRectangle || !fDrawText || !text) return;
-    fDrawRectangle(x, y, x + w, y + h, selected ? 4 : 6, 0);
-    fDrawRectangle(x + 2 * scale, y + 2 * scale, x + w - 2 * scale, y + h - 2 * scale, 0, 0);
+    if (!fDrawText || !text) return;
     const int width = fGetTextWidth ? fGetTextWidth(text) : (int) w / 2;
-    fDrawText(text, x + (w - width) / 2, y + (h - 14 * scale) / 2, 4, 0);
+    fDrawText(text, x + (w - width) / 2, y + (h - 14 * scale) / 2, selected ? 4 : 6, 0);
 }
 
 static void drawPadCombo(const wchar_t* trigger, const wchar_t* button, int x, int y, int scale, int selected) {
     const int w = 28 * scale, h = 24 * scale, gap = 4 * scale, plusW = 9 * scale;
-    drawPadButton(trigger, x, y, w, h, scale, selected);
+    wchar_t triggerKey[12] = L"[LT]";
+    wchar_t buttonKey[12] = L"[A]";
+    if (trigger && trigger[0] == L'R') triggerKey[1] = L'R';
+    if (button && button[0]) buttonKey[1] = button[0];
+    drawPadButton(triggerKey, x, y, w, h, scale, selected);
     if (fDrawText) fDrawText(L"+", x + w + (gap / 2), y + 4 * scale, 4, 0);
-    drawPadButton(button, x + w + gap + plusW, y, w, h, scale, selected);
+    drawPadButton(buttonKey, x + w + gap + plusW, y, w, h, scale, selected);
 }
 
 __attribute__((force_align_arg_pointer)) void __cdecl drawGamepadHints(void) {
     LONG mode = InterlockedCompareExchange(&gamepadHintMode, 0, 0);
-    if (!mode || !fDrawText || !fSetTextSize || !fDrawRectangle || !client) return;
+    if (!mode || !fDrawText || !fSetTextSize || !client) return;
     int width = (int) RD32(client, RVA_ScreenSizeX), height = (int) RD32(client, RVA_ScreenSizeY);
     if (width < 320 || height < 240) return;
     LONG buttons = InterlockedCompareExchange(&gamepadHintButtons, 0, 0);

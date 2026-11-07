@@ -90,9 +90,10 @@ int16_t readI16(const uint8_t *p) {
 
 void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
     state.targets.clear();
-    if (length < 58) return;
+    if (length < 59) return;
 
-    size_t offset = 57;
+    // The state header sends a raw monster count before the filtered list size.
+    size_t offset = 58;
     const uint8_t monsterCount = packet[offset++];
     for (uint8_t i = 0; i < monsterCount; ++i) {
         if (offset + 11 > length) return;

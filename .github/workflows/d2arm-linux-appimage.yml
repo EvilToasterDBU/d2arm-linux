@@ -29,7 +29,9 @@ jobs:
       - name: Build AppImage
         run: source/linux/build-appimage.sh
       - name: Create checksum
-        run: sha256sum source/linux/dist/d2arm-linux-aarch64.AppImage > source/linux/dist/d2arm-linux-aarch64.AppImage.sha256
+        run: |
+          cd source/linux/dist
+          sha256sum d2arm-linux-aarch64.AppImage > d2arm-linux-aarch64.AppImage.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: d2arm-linux-aarch64

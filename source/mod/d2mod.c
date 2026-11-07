@@ -4564,13 +4564,14 @@ __asm__(
     ".globl _worldDrawStub\n"
     "_worldDrawStub:\n"
     "    lock incl _worldFrames\n"
+    "    push 4(%esp)\n"
     "    call *_worldDrawUi\n"
     "    pushfl\n"
     "    pushal\n"
     "    call _drawGamepadHints\n"
     "    popal\n"
     "    popfl\n"
-    "    ret\n"
+    "    ret $4\n"
 );
 
 

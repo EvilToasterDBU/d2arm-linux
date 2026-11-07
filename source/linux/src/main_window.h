@@ -28,7 +28,6 @@ private slots:
     void processFinished(int exitCode, QProcess::ExitStatus status);
     void onGamepadStatus(const QString &status);
     void onLauncherAction(int action);
-    void onRadialMenuChanged(int selection);
 
 private:
     QString trText(const char *en, const char *ru) const;
@@ -48,7 +47,6 @@ private:
     QCheckBox *gamepadEnabled_ = nullptr;
     QComboBox *interfaceScale_ = nullptr;
     QLabel *status_ = nullptr;
-    QLabel *gamepadOverlay_ = nullptr;
     QPushButton *launch_ = nullptr;
     QPushButton *stop_ = nullptr;
     QPlainTextEdit *log_ = nullptr;

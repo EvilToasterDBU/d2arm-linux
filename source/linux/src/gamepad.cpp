@@ -61,6 +61,10 @@ struct ModState {
         for (unsigned panel : panels) if (uiFlags & (uint64_t{1} << panel)) return true;
         return false;
     }
+    bool inventoryGridOpen() const {
+        return (uiFlags & ((uint64_t{1} << 1) | (uint64_t{1} << 25) | (uint64_t{1} << 26))) != 0;
+    }
+    bool skillTreeOpen() const { return (uiFlags & (uint64_t{1} << 4)) != 0; }
     uint64_t panelSignature() const {
         constexpr std::array<unsigned, 21> panels = {1, 2, 3, 4, 5, 8, 9, 11, 12, 14, 15,
             16, 20, 22, 23, 24, 25, 26, 33, 36, 37};
@@ -224,19 +228,15 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
     double bestScore = std::numeric_limits<double>::max();
     double previousScore = std::numeric_limits<double>::max();
     const AimTarget *previous = nullptr;
-    const double coneCos = std::cos(70.0 * 0.5 * 3.14159265358979323846 / 180.0);
-
     for (const AimTarget &target : state.targets) {
         const double dx = target.x - state.playerX;
         const double dy = target.y - state.playerY;
-        const double distance = std::hypot(dx, 2.0 * dy);
+        const double distance = std::hypot(dx, dy);
         const bool monster = target.type == 1 && target.kind != 7;
         const bool npc = target.type == 1 && (target.flags & 16);
-        const double reach = height * (monster ? 0.75 : 0.55);
+        const double reach = height * 1.2;
         if (distance > reach) continue;
-        const double flatDistance = std::hypot(dx, dy);
-        const double dot = directional && flatDistance > 1.0 ? (dx * x + dy * y) / flatDistance : 1.0;
-        if (directional && dot < coneCos) continue;
+        const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
         const bool special = monster && (target.flags & (1 | 2 | 8));
         const double townNpcBias = state.inTown && npc ? 0.55 : 1.0;
         if (target.type == 2 && target.kind == 0) continue;
@@ -344,9 +344,17 @@ void Gamepad::run() {
     bool launcherDpadWasDown[4] = {false, false, false, false};
     Uint32 launcherRepeatAt[4] = {0, 0, 0, 0};
     bool skillWasDown[4] = {false, false, false, false};
-    bool radialWasDown = false;
-    int radialChoice = -1;
-    bool runWasDown = false, swapWasDown = false, triggerWasDown = false;
+    bool runWasDown = false, swapWasDown = false;
+    bool rtChordWasDown[4] = {false, false, false, false};
+    uint8_t lastHintMode = 0xff, lastHintButtons = 0xff;
+    auto clearGamepadHints = [&]() {
+        if (modState.commandPort > 0 && (lastHintMode != 0 || lastHintButtons != 0)) {
+            const uint8_t payload[2] = {0, 0};
+            sendModCommand(modSocket, modState.commandPort, 27, payload, sizeof(payload));
+        }
+        lastHintMode = lastHintButtons = 0;
+        for (bool &down : rtChordWasDown) down = false;
+    };
     bool pointerHidden = false;
     bool gameCursorHidden = false;
     Uint32 cursorHudRefreshAt = 0;
@@ -355,8 +363,8 @@ void Gamepad::run() {
     bool dpadArrowWasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
     float cursorY = DisplayHeight(display, DefaultScreen(display)) / 2.0f;
-    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение; ближайшая цель выбирается автоматически, правый стик меняет прицел; A — действие, LT+A — навык; R3 — радиальное меню; крестовина — пояс/навигация; View — инвентарь, LT+View — карта.")
-                                : QStringLiteral("Gamepad: left stick moves; nearest target is selected automatically, right stick aims; A interacts/attacks, LT+A casts; R3 opens radial menu; D-pad uses belt/navigates; View opens inventory, LT+View map."));
+    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение; цель выделяется автоматически; A — действие, LT+A — навык, LT+Y — дерево навыков; RT+A/B/X/Y — инвентарь/персонаж/задания/навыки.")
+                                : QStringLiteral("Gamepad: left stick moves; nearest target is highlighted; A interacts, LT+A casts, LT+Y opens skills; RT+A/B/X/Y open inventory/character/quests/skills."));
 
     while (running_.load()) {
         SDL_Event event;
@@ -365,6 +373,7 @@ void Gamepad::run() {
                 openController(event.cdevice.which);
             } else if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller &&
                        SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)) == event.cdevice.which) {
+                clearGamepadHints();
                 releaseDirectAttack();
                 if (highlightedKey) sendHighlight(modSocket, modState, nullptr), highlightedKey = 0;
                 if (directWalking) sendWalk(modSocket, modState, 2);
@@ -397,13 +406,15 @@ void Gamepad::run() {
                 const int displayHeight = DisplayHeight(display, DefaultScreen(display));
                 const double sx = static_cast<double>(displayWidth) / std::max(1, modState.gameWidth);
                 const double sy = static_cast<double>(displayHeight) / std::max(1, modState.gameHeight);
-                const bool rightPanel = modState.uiFlags & ((uint64_t{1} << 1) | (uint64_t{1} << 4) |
-                    (uint64_t{1} << 25) | (uint64_t{1} << 26));
-                const bool leftPanel = modState.uiFlags & ((uint64_t{1} << 2) | (uint64_t{1} << 15) |
-                    (uint64_t{1} << 17) | (uint64_t{1} << 36));
+                const bool stashPanel = (modState.uiFlags & ((uint64_t{1} << 25) | (uint64_t{1} << 26))) != 0;
+                const bool rightPanel = !stashPanel && ((modState.uiFlags & (uint64_t{1} << 1)) || modState.skillTreeOpen());
+                const bool leftPanel = stashPanel || (modState.uiFlags & ((uint64_t{1} << 2) | (uint64_t{1} << 15) |
+                    (uint64_t{1} << 17) | (uint64_t{1} << 36)));
                 const double gameX = rightPanel ? modState.gameWidth * 0.78 : leftPanel ? modState.gameWidth * 0.22 : modState.gameWidth * 0.5;
+                const double gameY = modState.inventoryGridOpen() ? modState.gameHeight * 0.60 :
+                    modState.skillTreeOpen() ? modState.gameHeight * 0.48 : modState.gameHeight * 0.50;
                 cursorX = std::clamp(static_cast<float>(gameX * sx), 0.0f, static_cast<float>(displayWidth - 1));
-                cursorY = std::clamp(static_cast<float>(modState.gameHeight * 0.5 * sy), 0.0f, static_cast<float>(displayHeight - 1));
+                cursorY = std::clamp(static_cast<float>(gameY * sy), 0.0f, static_cast<float>(displayHeight - 1));
                 XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
             }
             lastPanelSignature = panelSignature;
@@ -417,6 +428,7 @@ void Gamepad::run() {
             continue;
         }
         if (launcherMode_.load()) {
+            clearGamepadHints();
             releaseDirectAttack();
             if (highlightedKey) sendHighlight(modSocket, modState, nullptr), highlightedKey = 0;
             if (directWalking) sendWalk(modSocket, modState, 2);
@@ -468,6 +480,7 @@ void Gamepad::run() {
             continue;
         }
         if (!enabled_.load()) {
+            clearGamepadHints();
             releaseDirectAttack();
             if (highlightedKey) sendHighlight(modSocket, modState, nullptr), highlightedKey = 0;
             if (directWalking) sendWalk(modSocket, modState, 2);
@@ -575,14 +588,33 @@ void Gamepad::run() {
         const bool attackWasDown = attack;
         const bool layer2 = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
         const bool triggerDown = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
-        if (attackNow && !attackWasDown && layer2 && !pointerMode && stateFresh && modState.commandPort > 0) {
+        const SDL_GameControllerButton chordButtons[4] = {SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_B,
+            SDL_CONTROLLER_BUTTON_X, SDL_CONTROLLER_BUTTON_Y};
+        const KeySym rtKeys[4] = {XK_i, XK_c, XK_q, XK_t};
+        uint8_t hintButtons = 0;
+        for (int i = 0; i < 4; ++i) {
+            const bool down = SDL_GameControllerGetButton(controller, chordButtons[i]);
+            if (down) hintButtons |= static_cast<uint8_t>(1u << i);
+            const bool chordDown = triggerDown && down;
+            if (chordDown && !rtChordWasDown[i]) key(display, rtKeys[i], true), key(display, rtKeys[i], false);
+            rtChordWasDown[i] = chordDown;
+        }
+        const uint8_t hintMode = static_cast<uint8_t>((layer2 ? 1 : 0) | (triggerDown ? 2 : 0));
+        if (modState.commandPort > 0 && (hintMode != lastHintMode || hintButtons != lastHintButtons)) {
+            const uint8_t payload[2] = {hintMode, hintButtons};
+            sendModCommand(modSocket, modState.commandPort, 27, payload, sizeof(payload));
+            lastHintMode = hintMode;
+            lastHintButtons = hintButtons;
+        }
+        if (attackNow && !attackWasDown && layer2 && !triggerDown && !pointerMode && stateFresh && modState.commandPort > 0) {
             if (selectedTarget && selectedTarget->type != 4) sendUnit(modSocket, modState, *selectedTarget, 3, 1);
             else { mouseButton(display, 3, true); mouseButton(display, 3, false); }
         }
-        if (menuNavigation && attackNow && !attackWasDown) key(display, XK_Return, true), key(display, XK_Return, false);
-        attack = attackNow;
+        const bool effectiveAttack = attackNow && !triggerDown;
+        if (menuNavigation && effectiveAttack && !attackWasDown) key(display, XK_Return, true), key(display, XK_Return, false);
+        attack = effectiveAttack;
         const bool fallbackClickMove = fallbackMove;
-        const bool directTarget = !menuNavigation && !pointerMode && stateFresh && modState.commandPort > 0 && selectedTarget;
+        const bool directTarget = !triggerDown && !menuNavigation && !pointerMode && stateFresh && modState.commandPort > 0 && selectedTarget;
         const uint64_t selectedKey = directTarget ? (uint64_t(selectedTarget->type) << 32) | selectedTarget->id : 0;
         if (directAttackKey && (!attack || !directTarget || selectedKey != directAttackKey)) {
             releaseDirectAttack();
@@ -605,21 +637,9 @@ void Gamepad::run() {
                 static_cast<uint8_t>(selectedTarget->id >> 16), static_cast<uint8_t>(selectedTarget->id >> 24)};
             sendModCommand(modSocket, modState.commandPort, 15, payload, sizeof(payload));
         }
-        const bool wantLeft = (attack && menuNavigation) || fallbackClickMove || (attack && !stateFresh);
+        const bool wantLeft = (attack && !layer2 && pointerMode && !menuNavigation) || fallbackClickMove ||
+                              (attack && !stateFresh && !triggerDown && !layer2);
         if (wantLeft != leftHeld) mouseButton(display, 1, wantLeft), leftHeld = wantLeft;
-        if (triggerDown && !triggerWasDown && !layer2) key(display, XK_F5, true), key(display, XK_F5, false);
-        if (triggerDown && !triggerWasDown && layer2) {
-            if (stateFresh && modState.hoverType != 0xff && modState.hoverId != 0xffffffffu) {
-                const uint8_t payload[8] = {modState.hoverType, 0, 0, 0, static_cast<uint8_t>(modState.hoverId),
-                    static_cast<uint8_t>(modState.hoverId >> 8), static_cast<uint8_t>(modState.hoverId >> 16),
-                    static_cast<uint8_t>(modState.hoverId >> 24)};
-                sendModCommand(modSocket, modState.commandPort, 15, payload, sizeof(payload));
-            } else {
-                mouseButton(display, 1, true);
-                mouseButton(display, 1, false);
-            }
-        }
-        triggerWasDown = triggerDown;
 
         const bool menuDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_START);
         const bool inventoryDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_BACK);
@@ -641,12 +661,17 @@ void Gamepad::run() {
         for (int i = 0; i < 4; ++i) {
             const bool down = SDL_GameControllerGetButton(controller, skillButtons[i]);
             if (down && !skillWasDown[i]) {
-                if (i == 0 && pointerMode) {
+                if (triggerDown && i < 4) {
+                    // RT+A/B/X/Y were handled as game panel chords above.
+                } else if (i == 0 && pointerMode) {
                     mouseButton(display, 3, true);
                     rightHeld = true;
                 } else if (i == 1 && (menuNavigation || (pointerMode && stateFresh))) {
                     key(display, XK_Escape, true);
                     key(display, XK_Escape, false);
+                } else if (layer2 && i == 2) {
+                    key(display, XK_t, true);
+                    key(display, XK_t, false);
                 } else if (layer2 && i < 3 && stateFresh && modState.commandPort > 0 && modState.hotkeySkills[i + 4] != 0xffff) {
                     selectBoundSkill(modSocket, modState, i + 4);
                 } else if (i == 3 && layer2) {
@@ -666,22 +691,7 @@ void Gamepad::run() {
         const bool runNow = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_LEFTSTICK);
         const bool swapNow = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
         if (runNow && !runWasDown) key(display, XK_r, true), key(display, XK_r, false);
-        if (swapNow && !swapWasDown) { radialWasDown = true; radialChoice = -1; emit radialMenuChanged(-2); }
-        if (radialWasDown) {
-            if (std::hypot(rx, ry) > 0.45) {
-                double angle = std::atan2(-ry, rx);
-                if (angle < 0) angle += 2.0 * 3.14159265358979323846;
-                const int nextChoice = (static_cast<int>(std::lround(angle / (3.14159265358979323846 / 4.0))) + 8) % 8;
-                if (nextChoice != radialChoice) emit radialMenuChanged(radialChoice = nextChoice);
-            }
-            if (!swapNow) {
-                const KeySym radialKeys[8] = {XK_i, XK_c, XK_t, XK_q, XK_Tab, XK_Escape, XK_p, XK_w};
-                if (radialChoice >= 0) key(display, radialKeys[radialChoice], true), key(display, radialKeys[radialChoice], false);
-                emit radialMenuChanged(-1);
-                radialWasDown = false;
-                radialChoice = -1;
-            }
-        }
+        if (swapNow && !swapWasDown) key(display, XK_w, true), key(display, XK_w, false);
         runWasDown = runNow;
         swapWasDown = swapNow;
         const SDL_GameControllerButton buttons[4] = {SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
@@ -696,10 +706,22 @@ void Gamepad::run() {
             if (down && (!dpadWasDown[i] || modeChanged)) {
                 if (arrowMode) key(display, arrows[i], true);
                 else if (pointerMode) {
-                    const int gridStep = std::max(20, modState.gameHeight / (modState.escMenu() ? 8 : 20));
-                    const int cursorStep[4][2] = {{0,-gridStep},{0,gridStep},{-gridStep,0},{gridStep,0}};
-                    cursorX = std::clamp(cursorX + cursorStep[i][0], 0.0f, static_cast<float>(DisplayWidth(display, DefaultScreen(display)) - 1));
-                    cursorY = std::clamp(cursorY + cursorStep[i][1], 0.0f, static_cast<float>(DisplayHeight(display, DefaultScreen(display)) - 1));
+                    const float displayW = static_cast<float>(DisplayWidth(display, DefaultScreen(display)));
+                    const float displayH = static_cast<float>(DisplayHeight(display, DefaultScreen(display)));
+                    const int step = std::max(20, static_cast<int>(displayH / (modState.inventoryGridOpen() ? 20 : modState.skillTreeOpen() ? 10 : 12)));
+                    const int cursorStep[4][2] = {{0,-step},{0,step},{-step,0},{step,0}};
+                    float left = 0.10f, right = 0.90f, top = 0.20f, bottom = 0.82f;
+                    if (modState.inventoryGridOpen()) {
+                        const bool stash = (modState.uiFlags & ((uint64_t{1} << 25) | (uint64_t{1} << 26))) != 0;
+                        left = stash ? 0.04f : 0.62f; right = stash ? 0.39f : 0.98f;
+                        top = 0.28f; bottom = 0.88f;
+                    } else if (modState.skillTreeOpen()) {
+                        left = 0.60f; right = 0.98f; top = 0.18f; bottom = 0.78f;
+                    } else if (modState.uiFlags & (uint64_t{1} << 2)) {
+                        left = 0.04f; right = 0.40f;
+                    }
+                    cursorX = std::clamp(cursorX + cursorStep[i][0], displayW * left, displayW * right);
+                    cursorY = std::clamp(cursorY + cursorStep[i][1], displayH * top, displayH * bottom);
                     XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
                 }
                 else if (layer2) {

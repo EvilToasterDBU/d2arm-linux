@@ -75,8 +75,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     form->addRow(trText("In-game interface size", "Размер интерфейса игры"), interfaceScale_);
 
     auto *featureNote = new QLabel(trText(
-        "D2DX widescreen. Gamepad: left stick moves; nearest target (including town NPCs) is highlighted automatically; right stick adjusts aim; A attacks/interacts; LT+A casts the active skill; click R3 and tilt right stick to open inventory, character, skills, quests, map or game menu. In panels, D-pad moves the cursor; View opens inventory, LT+View map.",
-        "Широкий экран работает через D2DX. Геймпад: левый стик — движение; ближайшая цель (включая NPC в городе) выделяется автоматически; правый стик меняет прицел; A — атака/взаимодействие; LT+A — применить выбранный навык; нажмите R3 и отклоните правый стик для выбора инвентаря, персонажа, навыков, заданий, карты или меню. В окнах крестовина двигает курсор; View — инвентарь, LT+View — карта."), central);
+        "D2DX widescreen. Gamepad: left stick moves, nearby units are highlighted automatically, right stick steers aim, A interacts/attacks and LT+A casts. LT+Y opens the skill tree. Hold RT and press A/B/X/Y for inventory/character/quests/skills. In game panels, D-pad snaps between controls and A activates them.",
+        "Широкий экран работает через D2DX. Геймпад: левый стик — движение, ближайшие цели выделяются автоматически, правый стик наводит прицел, A — действие/атака, LT+A — применить навык. LT+Y открывает дерево навыков. Удерживайте RT и нажимайте A/B/X/Y, чтобы открыть инвентарь/персонажа/задания/навыки. В игровых окнах крестовина выбирает элементы, A активирует их."), central);
     featureNote->setWordWrap(true);
     root->addWidget(featureNote);
 
@@ -109,11 +109,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(&process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &MainWindow::processFinished);
     connect(&gamepad_, &Gamepad::statusChanged, this, &MainWindow::onGamepadStatus);
     connect(&gamepad_, &Gamepad::launcherAction, this, &MainWindow::onLauncherAction);
-    connect(&gamepad_, &Gamepad::radialMenuChanged, this, &MainWindow::onRadialMenuChanged);
-    gamepadOverlay_ = new QLabel(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
-    gamepadOverlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
-    gamepadOverlay_->setAttribute(Qt::WA_ShowWithoutActivating);
-    gamepadOverlay_->setStyleSheet(QStringLiteral("QLabel { color: white; background: rgba(12, 16, 24, 205); border: 1px solid rgba(255,255,255,90); border-radius: 10px; padding: 10px 16px; font-size: 13px; }") );
 
     restoreSettings();
     applyStyle();
@@ -123,7 +118,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 MainWindow::~MainWindow() {
     saveSettings();
     gamepad_.stop();
-    delete gamepadOverlay_;
 }
 
 QString MainWindow::trText(const char *en, const char *ru) const {
@@ -326,7 +320,6 @@ void MainWindow::launchGame() {
         gamepad_.setEnabled(gamepadEnabled_->isChecked());
         process_.start();
         if (!process_.waitForStarted(5000)) throw std::runtime_error(process_.errorString().toStdString());
-        onRadialMenuChanged(-1);
         saveSettings();
     } catch (const std::exception &e) {
         gamepad_.setEnabled(false);
@@ -355,7 +348,6 @@ void MainWindow::processFinished(int exitCode, QProcess::ExitStatus status) {
     launch_->setEnabled(true);
     stop_->setEnabled(false);
     status_->setText(trText("Game closed", "Игра закрыта"));
-    gamepadOverlay_->hide();
     appendLog(trText("Wine process ended with code ", "Процесс Wine завершился с кодом ") +
               QString::number(exitCode) + (status == QProcess::CrashExit ? trText(" (crashed)", " (аварийно)") : QString()));
 }
@@ -363,34 +355,6 @@ void MainWindow::processFinished(int exitCode, QProcess::ExitStatus status) {
 void MainWindow::onGamepadStatus(const QString &status) {
     if (status.isEmpty()) return;
     appendLog(status);
-}
-
-void MainWindow::onRadialMenuChanged(int selection) {
-    if (!gamepadOverlay_) return;
-    if (process_.state() == QProcess::NotRunning) { gamepadOverlay_->hide(); return; }
-    const QStringList items = russian_
-        ? QStringList{QStringLiteral("Инвентарь"), QStringLiteral("Персонаж"), QStringLiteral("Навыки"), QStringLiteral("Задания"), QStringLiteral("Карта"), QStringLiteral("Меню"), QStringLiteral("Группа"), QStringLiteral("Смена оружия")}
-        : QStringList{QStringLiteral("Inventory"), QStringLiteral("Character"), QStringLiteral("Skills"), QStringLiteral("Quests"), QStringLiteral("Map"), QStringLiteral("Menu"), QStringLiteral("Party"), QStringLiteral("Swap weapons")};
-    QString content;
-    if (selection == -1) {
-        content = russian_ ? QStringLiteral("R3 — меню   •   A — действие   •   LT+A — навык   •   крестовина — пояс/ячейки   •   View — инвентарь   •   LT+View — карта")
-                           : QStringLiteral("R3 radial menu   •   A action   •   LT+A skill   •   D-pad belt/slots   •   View inventory   •   LT+View map");
-    } else {
-        QStringList labels;
-        for (int i = 0; i < items.size(); ++i)
-            labels << (i == selection ? QStringLiteral("▶ %1 ◀").arg(items[i]) : items[i]);
-        content = russian_ ? QStringLiteral("Радиальное меню (отпустите R3 для выбора)\n%1").arg(labels.join(QStringLiteral("   •   ")))
-                           : QStringLiteral("Radial menu (release R3 to select)\n%1").arg(labels.join(QStringLiteral("   •   ")));
-    }
-    gamepadOverlay_->setText(content);
-    gamepadOverlay_->adjustSize();
-    const auto screens = QGuiApplication::screens();
-    if (!screens.isEmpty()) {
-        const QRect area = screens.first()->geometry();
-        const int y = selection == -1 ? area.bottom() - gamepadOverlay_->height() - 24 : area.center().y() - gamepadOverlay_->height() / 2;
-        gamepadOverlay_->move(area.center().x() - gamepadOverlay_->width() / 2, y);
-    }
-    gamepadOverlay_->show();
 }
 
 void MainWindow::onLauncherAction(int action) {

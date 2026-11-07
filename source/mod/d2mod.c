@@ -286,6 +286,7 @@ static const BYTE GAMELOOP_ORIGINAL[7] = {0x83, 0xEC, 0x20, 0x89, 0x4C, 0x24, 0x
 #define PHASE_UP 2
 #define PHASE_CLICK 3
 #define CMD_HIGHLIGHT 3
+#define CMD_PAD_HINT 27
 #define CMD_WALK 4
 #define CMD_PORTAL 7
 #define CMD_NPC 8
@@ -342,6 +343,7 @@ static void* forcedUnit;
 
 static BYTE* selectedTrampoline;
 static DWORD highlightType, highlightId = 0xFFFFFFFF, highlightUntil;
+static volatile LONG gamepadHintMode, gamepadHintButtons;
 static struct {
     int active, button, shift;
     DWORD type, id, expireAt;
@@ -2141,6 +2143,7 @@ typedef void (__fastcall *AddCell_t)(void*, void*);
 typedef void (__fastcall *DrawText_t)(const wchar_t*, int, int, int, int);
 typedef int (__fastcall *TextWidth_t)(const wchar_t*);
 typedef int (__fastcall *SetTextSize_t)(int);
+typedef void (__stdcall *DrawRectangle_t)(int, int, int, int, DWORD, DWORD);
 static GetLevel_t fGetLevel;
 static InitLevel_t fInitLevel;
 static RoomData_t fAddRoomData, fRemoveRoomData;
@@ -2153,6 +2156,7 @@ static AddCell_t fAddAutomapCell;
 static DrawText_t fDrawText;
 static TextWidth_t fGetTextWidth;
 static SetTextSize_t fSetTextSize;
+static DrawRectangle_t fDrawRectangle;
 
 static DWORD* objectTxtCount;
 static int mapAvailable, mapShown;
@@ -2248,6 +2252,7 @@ static void __cdecl automapDrawn(void);
 
 static void checkMapSites(void) {
     HMODULE win = GetModuleHandleA("D2Win.dll");
+    HMODULE gfx = GetModuleHandleA("D2Gfx.dll");
     fGetLevel = (GetLevel_t) GetProcAddress((HMODULE) common, (LPCSTR) ORD_GetLevel);
     fInitLevel = (InitLevel_t) GetProcAddress((HMODULE) common, (LPCSTR) ORD_InitLevel);
     fAddRoomData = (RoomData_t) GetProcAddress((HMODULE) common, (LPCSTR) ORD_AddRoomData);
@@ -2258,6 +2263,7 @@ static void checkMapSites(void) {
     fDrawText = win ? (DrawText_t) GetProcAddress(win, (LPCSTR) ORD_DrawText) : NULL;
     fGetTextWidth = win ? (TextWidth_t) GetProcAddress(win, (LPCSTR) ORD_GetTextWidth) : NULL;
     fSetTextSize = win ? (SetTextSize_t) GetProcAddress(win, (LPCSTR) ORD_SetTextSize) : NULL;
+    fDrawRectangle = gfx ? (DrawRectangle_t) GetProcAddress(gfx, MAKEINTRESOURCEA(10014)) : NULL;
     fRevealAutomapRoom = (RevealRoom_t) (client + RVA_RevealAutomapRoom);
     fNewAutomapCell = (NewCell_t) (client + RVA_NewAutomapCell);
     fAddAutomapCell = (AddCell_t) (client + RVA_AddAutomapCell);
@@ -2328,6 +2334,7 @@ static void checkMapSites(void) {
     FlushInstructionCache(GetCurrentProcess(), at, 5);
     mapAvailable = 1;
     logLine("map hack sites verified, automap drawing hooked (%lu objects)", (unsigned long) *objectTxtCount);
+    logLine(fDrawRectangle ? "gamepad button icon drawing sites verified" : "D2GFX rectangle drawing unavailable, gamepad hint icons disabled");
 }
 
 
@@ -2768,6 +2775,54 @@ static void drawLabels(void) {
 __attribute__((force_align_arg_pointer)) static void __cdecl automapDrawn(void) {
     ((void (__cdecl *)(void)) (client + RVA_DrawAutomap))();
     if (mapShown) drawLabels();
+}
+
+static void drawPadButton(const wchar_t* text, int x, int y, int w, int h, int scale, int selected) {
+    if (!fDrawRectangle || !fDrawText || !text) return;
+    fDrawRectangle(x, y, x + w, y + h, selected ? 4 : 6, 0);
+    fDrawRectangle(x + 2 * scale, y + 2 * scale, x + w - 2 * scale, y + h - 2 * scale, 0, 0);
+    const int width = fGetTextWidth ? fGetTextWidth(text) : (int) w / 2;
+    fDrawText(text, x + (w - width) / 2, y + (h - 14 * scale) / 2, 4, 0);
+}
+
+static void drawPadCombo(const wchar_t* trigger, const wchar_t* button, int x, int y, int scale, int selected) {
+    const int w = 28 * scale, h = 24 * scale, gap = 4 * scale, plusW = 9 * scale;
+    drawPadButton(trigger, x, y, w, h, scale, selected);
+    if (fDrawText) fDrawText(L"+", x + w + (gap / 2), y + 4 * scale, 4, 0);
+    drawPadButton(button, x + w + gap + plusW, y, w, h, scale, selected);
+}
+
+__attribute__((force_align_arg_pointer)) void __cdecl drawGamepadHints(void) {
+    LONG mode = InterlockedCompareExchange(&gamepadHintMode, 0, 0);
+    if (!mode || !fDrawText || !fSetTextSize || !fDrawRectangle || !client) return;
+    int width = (int) RD32(client, RVA_ScreenSizeX), height = (int) RD32(client, RVA_ScreenSizeY);
+    if (width < 320 || height < 240) return;
+    LONG buttons = InterlockedCompareExchange(&gamepadHintButtons, 0, 0);
+    int scale = height / 600;
+    if (scale < 1) scale = 1;
+    if (scale > 4) scale = 4;
+    int oldFont = fSetTextSize(1);
+    if (mode & 1) {
+        const int comboW = 28 * scale * 2 + 4 * scale + 9 * scale;
+        const int gap = 12 * scale;
+        const int total = comboW * 2 + gap;
+        const int y = height - ((mode & 2) ? 92 : 58) * scale;
+        const int x = (width - total) / 2;
+        drawPadCombo(L"LT", L"A", x, y, scale, (buttons & 1) != 0);
+        drawPadCombo(L"LT", L"Y", x + comboW + gap, y, scale, (buttons & 8) != 0);
+    }
+    if (mode & 2) {
+        const int comboW = 28 * scale * 2 + 4 * scale + 9 * scale;
+        const int gap = 8 * scale;
+        const int total = comboW * 4 + gap * 3;
+        const int y = height - 58 * scale;
+        const int x = (width - total) / 2;
+        drawPadCombo(L"RT", L"A", x, y, scale, (buttons & 1) != 0);
+        drawPadCombo(L"RT", L"B", x + comboW + gap, y, scale, (buttons & 2) != 0);
+        drawPadCombo(L"RT", L"X", x + (comboW + gap) * 2, y, scale, (buttons & 4) != 0);
+        drawPadCombo(L"RT", L"Y", x + (comboW + gap) * 3, y, scale, (buttons & 8) != 0);
+    }
+    fSetTextSize(oldFont);
 }
 
 
@@ -3506,10 +3561,18 @@ static void handleCommands(void* player, int stale) {
             unitAction(buf[8], buf[9], buf[10], *(DWORD*) (buf + 12), *(DWORD*) (buf + 16), GetTickCount());
         }
         else if (cmd == CMD_HIGHLIGHT && n >= 16) {
-            if (*(DWORD*) (buf + 12) != highlightId) trace("highlight %lu type %lu", (unsigned long) *(DWORD*) (buf + 12), (unsigned long) *(DWORD*) (buf + 8));
+            if (*(DWORD*) (buf + 12) != highlightId) {
+                void* target = findUnit(*(DWORD*) (buf + 12), *(DWORD*) (buf + 8));
+                logLine("controller target: type %lu id %lu%s", (unsigned long) *(DWORD*) (buf + 8),
+                    (unsigned long) *(DWORD*) (buf + 12), target ? " resolved" : " not found");
+            }
             highlightType = *(DWORD*) (buf + 8);
             highlightId = *(DWORD*) (buf + 12);
             highlightUntil = GetTickCount() + 1000;
+        }
+        else if (cmd == CMD_PAD_HINT && n >= 10) {
+            InterlockedExchange(&gamepadHintMode, buf[8] & 3);
+            InterlockedExchange(&gamepadHintButtons, buf[9] & 15);
         }
     }
 }
@@ -4494,13 +4557,20 @@ static void noteGame(void* player, DWORD now) {
 #define RVA_WorldUi      0x1D3E0
 #define RVA_WorldUiFlag  0x11C8D8
 DWORD worldDrawUi;
+void __cdecl drawGamepadHints(void);
 void worldDrawStub(void);
 __asm__(
     ".text\n"
     ".globl _worldDrawStub\n"
     "_worldDrawStub:\n"
     "    lock incl _worldFrames\n"
-    "    jmp *_worldDrawUi\n"
+    "    call *_worldDrawUi\n"
+    "    pushfl\n"
+    "    pushal\n"
+    "    call _drawGamepadHints\n"
+    "    popal\n"
+    "    popfl\n"
+    "    ret\n"
 );
 
 

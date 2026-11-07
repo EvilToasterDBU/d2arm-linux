@@ -16,7 +16,6 @@ public:
 signals:
     void statusChanged(const QString &status);
     void launcherAction(int action);
-    void radialMenuChanged(int selection);
 
 protected:
     void run() override;

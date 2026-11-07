@@ -38,6 +38,7 @@ struct AimTarget {
 
 struct ModState {
     int commandPort = 0;
+    int gameWidth = 800;
     int gameHeight = 600;
     Uint32 stateAt = 0;
     uint64_t uiFlags = 0;
@@ -154,6 +155,7 @@ void receiveModPackets(int fd, ModState &state, Uint32 now) {
             if (portOffset + 2 <= static_cast<size_t>(n))
                 state.commandPort = packet[portOffset] | (packet[portOffset + 1] << 8);
         } else if (packet[5] == 2 && n >= 39) {
+            state.gameWidth = readU16(packet.data() + 8);
             state.gameHeight = packet[10] | (packet[11] << 8);
             const uint32_t low = packet[16] | (uint32_t(packet[17]) << 8) | (uint32_t(packet[18]) << 16) | (uint32_t(packet[19]) << 24);
             const uint32_t high = packet[20] | (uint32_t(packet[21]) << 8) | (uint32_t(packet[22]) << 16) | (uint32_t(packet[23]) << 24);
@@ -443,8 +445,12 @@ void Gamepad::run() {
         bool cursorSnappedToTarget = false;
         if (!pointerMode && stateFresh && (rx != 0.0f || ry != 0.0f)) {
             if (const AimTarget *target = chooseAimTarget(modState, rx, ry)) {
-                cursorX = target->x;
-                cursorY = target->y;
+                const float scaleX = DisplayWidth(display, DefaultScreen(display)) /
+                                     static_cast<float>(std::max(1, modState.gameWidth));
+                const float scaleY = DisplayHeight(display, DefaultScreen(display)) /
+                                     static_cast<float>(std::max(1, modState.gameHeight));
+                cursorX = target->x * scaleX;
+                cursorY = target->y * scaleY;
                 cursorMoveX = cursorMoveY = 0;
                 cursorSnappedToTarget = true;
             }

@@ -75,8 +75,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     form->addRow(trText("In-game interface size", "Размер интерфейса игры"), interfaceScale_);
 
     auto *featureNote = new QLabel(trText(
-        "D2DX widescreen. Gamepad: left stick moves; right stick moves the aim cursor; A attacks/interacts with the target under the cursor; LT+Back toggles the map; LT+RT picks up the highlighted item. D-pad: ↑/↓/←/→ use belt slots 4/3/1/2; X/B/Y/RB select F1–F4.",
-        "Широкий экран работает через D2DX. Геймпад: левый стик — движение; правый стик перемещает курсор прицела; A — атака/взаимодействие с целью под курсором; LT+Back — карта; LT+RT — поднять подсвеченный предмет. Крестовина ↑/↓/←/→ использует ячейки пояса 4/3/1/2; X/B/Y/RB выбирают F1–F4."), central);
+        "D2DX widescreen. Gamepad: left stick moves; right stick aims and selects a nearby target in that direction; A attacks/interacts with the highlighted target; LT+Back toggles the map; LT+RT picks up the highlighted item. D-pad: ↑/↓/←/→ use belt slots 4/3/1/2; X/B/Y/RB select F1–F4.",
+        "Широкий экран работает через D2DX. Геймпад: левый стик — движение; правый наводит курсор и выбирает ближайшую цель в этом направлении; A — атака/действие по подсвеченной цели; LT+Back — карта; LT+RT — поднять подсвеченный предмет. Крестовина ↑/↓/←/→ использует ячейки пояса 4/3/1/2; X/B/Y/RB выбирают F1–F4."), central);
     featureNote->setWordWrap(true);
     root->addWidget(featureNote);
 

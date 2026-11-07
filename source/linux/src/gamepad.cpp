@@ -13,8 +13,10 @@
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 void key(Display *display, KeySym sym, bool down) {
@@ -25,6 +27,15 @@ void mouseButton(Display *display, unsigned int button, bool down) {
     XTestFakeButtonEvent(display, button, down, CurrentTime);
 }
 
+struct AimTarget {
+    uint32_t id = 0;
+    uint8_t type = 0;
+    uint8_t kind = 0;
+    uint8_t flags = 0;
+    int x = 0;
+    int y = 0;
+};
+
 struct ModState {
     int commandPort = 0;
     int gameHeight = 600;
@@ -33,6 +44,11 @@ struct ModState {
     uint32_t hoverId = 0xffffffffu;
     uint8_t hoverType = 0xff;
     bool canWalk = false;
+    bool inTown = false;
+    int playerX = 0;
+    int playerY = 0;
+    uint64_t aimTargetKey = 0;
+    std::vector<AimTarget> targets;
 
     bool fresh(Uint32 now) const { return stateAt && now - stateAt < 500; }
     bool panelOpen() const {
@@ -44,6 +60,69 @@ struct ModState {
     bool escMenu() const { return (uiFlags & (uint64_t{1} << 9)) != 0; }
     bool npcMenu() const { return (uiFlags & (uint64_t{1} << 8)) != 0; }
 };
+
+uint16_t readU16(const uint8_t *p) {
+    return static_cast<uint16_t>(p[0] | (uint16_t(p[1]) << 8));
+}
+
+uint32_t readU32(const uint8_t *p) {
+    return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
+}
+
+int16_t readI16(const uint8_t *p) {
+    return static_cast<int16_t>(readU16(p));
+}
+
+void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
+    state.targets.clear();
+    if (length < 59) return;
+
+    size_t offset = 58;
+    const uint8_t monsterCount = packet[offset++];
+    for (uint8_t i = 0; i < monsterCount; ++i) {
+        if (offset + 11 > length) return;
+        AimTarget target;
+        target.type = 1;
+        target.id = readU32(packet + offset);
+        target.x = readI16(packet + offset + 4);
+        target.y = readI16(packet + offset + 6);
+        target.flags = packet[offset + 9];
+        const size_t nameLength = packet[offset + 10];
+        offset += 11 + nameLength;
+        if (offset > length) return;
+        if (state.inTown && (target.flags & 16)) continue;
+        if (!state.inTown && (target.flags & 16)) continue;
+        state.targets.push_back(target);
+    }
+
+    if (offset >= length) return;
+    const uint8_t itemCount = packet[offset++];
+    for (uint8_t i = 0; i < itemCount; ++i) {
+        if (offset + 10 > length) return;
+        AimTarget target;
+        target.type = 4;
+        target.id = readU32(packet + offset);
+        target.x = readI16(packet + offset + 4);
+        target.y = readI16(packet + offset + 6);
+        target.kind = packet[offset + 8];
+        state.targets.push_back(target);
+        offset += 10;
+    }
+
+    if (offset >= length) return;
+    const uint8_t objectCount = packet[offset++];
+    for (uint8_t i = 0; i < objectCount; ++i) {
+        if (offset + 10 > length) return;
+        AimTarget target;
+        target.id = readU32(packet + offset);
+        target.x = readI16(packet + offset + 4);
+        target.y = readI16(packet + offset + 6);
+        target.kind = packet[offset + 8];
+        target.type = target.kind == 6 ? 5 : target.kind == 7 ? 1 : 2;
+        state.targets.push_back(target);
+        offset += 10;
+    }
+}
 
 int openModSocket() {
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -80,8 +159,12 @@ void receiveModPackets(int fd, ModState &state, Uint32 now) {
             const uint32_t high = packet[20] | (uint32_t(packet[21]) << 8) | (uint32_t(packet[22]) << 16) | (uint32_t(packet[23]) << 24);
             state.uiFlags = low | (uint64_t(high) << 32);
             state.canWalk = (packet[27] & 4) != 0;
+            state.inTown = packet[26] != 0;
+            state.playerX = readI16(packet.data() + 28);
+            state.playerY = readI16(packet.data() + 30);
             state.hoverType = packet[34];
             state.hoverId = packet[35] | (uint32_t(packet[36]) << 8) | (uint32_t(packet[37]) << 16) | (uint32_t(packet[38]) << 24);
+            parseAimTargets(packet.data(), static_cast<size_t>(n), state);
             state.stateAt = now;
         }
     }
@@ -108,6 +191,49 @@ void sendWalk(int fd, const ModState &state, int phase, float x = 0, float y = 0
     const uint8_t payload[6] = {static_cast<uint8_t>(phase), 0, static_cast<uint8_t>(dx),
         static_cast<uint8_t>(uint16_t(dx) >> 8), static_cast<uint8_t>(dy), static_cast<uint8_t>(uint16_t(dy) >> 8)};
     sendModCommand(fd, state.commandPort, 4, payload, sizeof(payload));
+}
+
+const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
+    const double aimLength = std::hypot(x, y);
+    if (aimLength < 0.01) {
+        state.aimTargetKey = 0;
+        return nullptr;
+    }
+    x = static_cast<float>(x / aimLength);
+    y = static_cast<float>(y / aimLength);
+    const float height = std::max(1, state.gameHeight);
+    const AimTarget *best = nullptr;
+    double bestScore = std::numeric_limits<double>::max();
+    double previousScore = std::numeric_limits<double>::max();
+    const AimTarget *previous = nullptr;
+    const double coneCos = std::cos(55.0 * 0.5 * 3.14159265358979323846 / 180.0);
+
+    for (const AimTarget &target : state.targets) {
+        const double dx = target.x - state.playerX;
+        const double dy = target.y - state.playerY;
+        const double distance = std::hypot(dx, 2.0 * dy);
+        const bool monster = target.type == 1 && target.kind != 7;
+        const double reach = height * (monster ? 0.75 : 0.55);
+        if (distance > reach) continue;
+        const double flatDistance = std::hypot(dx, dy);
+        const double dot = flatDistance > 1.0 ? (dx * x + dy * y) / flatDistance : 1.0;
+        if (dot < coneCos) continue;
+        const bool special = monster && (target.flags & (1 | 2 | 8));
+        const double score = distance * (1.5 - dot) * (special ? 0.9 : 1.0);
+        const uint64_t key = (uint64_t(target.type) << 32) | target.id;
+        if (key == state.aimTargetKey) {
+            previous = &target;
+            previousScore = score;
+        }
+        if (score < bestScore) {
+            best = &target;
+            bestScore = score;
+        }
+    }
+
+    if (previous && previousScore <= bestScore * 1.15) best = previous;
+    state.aimTargetKey = best ? (uint64_t(best->type) << 32) | best->id : 0;
+    return best;
 }
 }
 
@@ -164,8 +290,8 @@ void Gamepad::run() {
     bool dpadArrowWasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
     float cursorY = DisplayHeight(display, DefaultScreen(display)) / 2.0f;
-    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение, правый — курсор цели, A — атаковать/взаимодействовать, LT+Back — карта.")
-                                : QStringLiteral("Gamepad: left stick moves, right stick aims the cursor, A attacks/interacts, LT+Back opens the map."));
+    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение, правый — прицел и выбор цели, A — атаковать/взаимодействовать, LT+Back — карта.")
+                                : QStringLiteral("Gamepad: left stick moves, right stick aims/selects a target, A attacks/interacts, LT+Back opens the map."));
 
     while (running_.load()) {
         SDL_Event event;
@@ -312,9 +438,18 @@ void Gamepad::run() {
         }
 
         const bool fallbackMove = moveNow && !pointerMode && (modSocket < 0 || (stateFresh && !modState.canWalk));
-        const float cursorMoveX = pointerMode ? x + rx : (fallbackMove ? x : rx);
-        const float cursorMoveY = pointerMode ? y + ry : (fallbackMove ? y : ry);
-        if (cursorMoveX != 0 || cursorMoveY != 0) {
+        float cursorMoveX = pointerMode ? x + rx : (fallbackMove ? x : rx);
+        float cursorMoveY = pointerMode ? y + ry : (fallbackMove ? y : ry);
+        bool cursorSnappedToTarget = false;
+        if (!pointerMode && stateFresh && (rx != 0.0f || ry != 0.0f)) {
+            if (const AimTarget *target = chooseAimTarget(modState, rx, ry)) {
+                cursorX = target->x;
+                cursorY = target->y;
+                cursorMoveX = cursorMoveY = 0;
+                cursorSnappedToTarget = true;
+            }
+        }
+        if (cursorSnappedToTarget || cursorMoveX != 0 || cursorMoveY != 0) {
             cursorX += cursorMoveX * 8.0f;
             cursorY += cursorMoveY * 8.0f;
             cursorX = std::clamp(cursorX, 0.0f, static_cast<float>(DisplayWidth(display, DefaultScreen(display)) - 1));

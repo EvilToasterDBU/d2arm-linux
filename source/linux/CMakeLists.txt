@@ -10,6 +10,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
 find_package(X11 REQUIRED)
 find_library(XTST_LIBRARY Xtst REQUIRED)
+find_library(XFIXES_LIBRARY Xfixes REQUIRED)
 
 qt_add_executable(d2arm-linux
     src/main.cpp
@@ -18,7 +19,7 @@ qt_add_executable(d2arm-linux
     src/gamepad.cpp
     src/gamepad.h
 )
-target_link_libraries(d2arm-linux PRIVATE Qt6::Widgets PkgConfig::SDL2 X11::X11 ${XTST_LIBRARY})
+target_link_libraries(d2arm-linux PRIVATE Qt6::Widgets PkgConfig::SDL2 X11::X11 ${XTST_LIBRARY} ${XFIXES_LIBRARY})
 target_compile_definitions(d2arm-linux PRIVATE D2_VERSION="${PROJECT_VERSION}")
 install(TARGETS d2arm-linux RUNTIME DESTINATION bin)
 install(FILES share/d2arm-linux.desktop DESTINATION share/applications)

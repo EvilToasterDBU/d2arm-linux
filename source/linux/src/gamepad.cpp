@@ -4,6 +4,7 @@
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XTest.h>
+#include <X11/extensions/Xfixes.h>
 
 #include <QThread>
 #include <algorithm>
@@ -50,6 +51,8 @@ struct ModState {
     int playerY = 0;
     uint64_t aimTargetKey = 0;
     std::vector<AimTarget> targets;
+    uint16_t hotkeySkills[16]{};
+    uint8_t hotkeyHands[16]{};
 
     bool fresh(Uint32 now) const { return stateAt && now - stateAt < 500; }
     bool panelOpen() const {
@@ -57,6 +60,13 @@ struct ModState {
             16, 20, 22, 23, 24, 25, 26, 33, 36, 37};
         for (unsigned panel : panels) if (uiFlags & (uint64_t{1} << panel)) return true;
         return false;
+    }
+    uint64_t panelSignature() const {
+        constexpr std::array<unsigned, 21> panels = {1, 2, 3, 4, 5, 8, 9, 11, 12, 14, 15,
+            16, 20, 22, 23, 24, 25, 26, 33, 36, 37};
+        uint64_t result = 0;
+        for (unsigned panel : panels) result |= uiFlags & (uint64_t{1} << panel);
+        return result;
     }
     bool escMenu() const { return (uiFlags & (uint64_t{1} << 9)) != 0; }
     bool npcMenu() const { return (uiFlags & (uint64_t{1} << 8)) != 0; }
@@ -76,9 +86,9 @@ int16_t readI16(const uint8_t *p) {
 
 void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
     state.targets.clear();
-    if (length < 59) return;
+    if (length < 58) return;
 
-    size_t offset = 58;
+    size_t offset = 57;
     const uint8_t monsterCount = packet[offset++];
     for (uint8_t i = 0; i < monsterCount; ++i) {
         if (offset + 11 > length) return;
@@ -91,8 +101,6 @@ void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
         const size_t nameLength = packet[offset + 10];
         offset += 11 + nameLength;
         if (offset > length) return;
-        if (state.inTown && (target.flags & 16)) continue;
-        if (!state.inTown && (target.flags & 16)) continue;
         state.targets.push_back(target);
     }
 
@@ -122,6 +130,15 @@ void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
         target.type = target.kind == 6 ? 5 : target.kind == 7 ? 1 : 2;
         state.targets.push_back(target);
         offset += 10;
+    }
+    // The state packet ends its target lists with class/current skills and 16 hotkey slots.
+    if (offset + 53 <= length) {
+        offset += 5; // class, left hand skill, right hand skill
+        for (int i = 0; i < 16; ++i) {
+            state.hotkeySkills[i] = readU16(packet + offset);
+            state.hotkeyHands[i] = packet[offset + 2];
+            offset += 3;
+        }
     }
 }
 
@@ -197,34 +214,34 @@ void sendWalk(int fd, const ModState &state, int phase, float x = 0, float y = 0
 
 const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
     const double aimLength = std::hypot(x, y);
-    if (aimLength < 0.01) {
-        for (const AimTarget &target : state.targets) {
-            if (((uint64_t(target.type) << 32) | target.id) == state.aimTargetKey) return &target;
-        }
-        state.aimTargetKey = 0;
-        return nullptr;
+    const bool directional = aimLength >= 0.18;
+    if (directional) {
+        x = static_cast<float>(x / aimLength);
+        y = static_cast<float>(y / aimLength);
     }
-    x = static_cast<float>(x / aimLength);
-    y = static_cast<float>(y / aimLength);
     const float height = std::max(1, state.gameHeight);
     const AimTarget *best = nullptr;
     double bestScore = std::numeric_limits<double>::max();
     double previousScore = std::numeric_limits<double>::max();
     const AimTarget *previous = nullptr;
-    const double coneCos = std::cos(55.0 * 0.5 * 3.14159265358979323846 / 180.0);
+    const double coneCos = std::cos(70.0 * 0.5 * 3.14159265358979323846 / 180.0);
 
     for (const AimTarget &target : state.targets) {
         const double dx = target.x - state.playerX;
         const double dy = target.y - state.playerY;
         const double distance = std::hypot(dx, 2.0 * dy);
         const bool monster = target.type == 1 && target.kind != 7;
+        const bool npc = target.type == 1 && (target.flags & 16);
         const double reach = height * (monster ? 0.75 : 0.55);
         if (distance > reach) continue;
         const double flatDistance = std::hypot(dx, dy);
-        const double dot = flatDistance > 1.0 ? (dx * x + dy * y) / flatDistance : 1.0;
-        if (dot < coneCos) continue;
+        const double dot = directional && flatDistance > 1.0 ? (dx * x + dy * y) / flatDistance : 1.0;
+        if (directional && dot < coneCos) continue;
         const bool special = monster && (target.flags & (1 | 2 | 8));
-        const double score = distance * (1.5 - dot) * (special ? 0.9 : 1.0);
+        const double townNpcBias = state.inTown && npc ? 0.55 : 1.0;
+        if (target.type == 2 && target.kind == 0) continue;
+        const double categoryBias = target.type == 1 ? (npc ? 0.8 : 0.7) : target.type == 2 ? 1.25 : 1.1;
+        const double score = distance * (directional ? (1.5 - dot) : 1.0) * (special ? 0.9 : 1.0) * townNpcBias * categoryBias;
         const uint64_t key = (uint64_t(target.type) << 32) | target.id;
         if (key == state.aimTargetKey) {
             previous = &target;
@@ -241,8 +258,8 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
     return best;
 }
 
-void sendUnit(int fd, const ModState &state, const AimTarget &target, int phase) {
-    const uint8_t payload[12] = {0, static_cast<uint8_t>(phase), 0, 0,
+void sendUnit(int fd, const ModState &state, const AimTarget &target, int phase, int button = 0) {
+    const uint8_t payload[12] = {static_cast<uint8_t>(button), static_cast<uint8_t>(phase), 0, 0,
         static_cast<uint8_t>(target.type), 0, 0, 0,
         static_cast<uint8_t>(target.id), static_cast<uint8_t>(target.id >> 8),
         static_cast<uint8_t>(target.id >> 16), static_cast<uint8_t>(target.id >> 24)};
@@ -257,6 +274,14 @@ void sendHighlight(int fd, const ModState &state, const AimTarget *target) {
         static_cast<uint8_t>(id), static_cast<uint8_t>(id >> 8),
         static_cast<uint8_t>(id >> 16), static_cast<uint8_t>(id >> 24)};
     sendModCommand(fd, state.commandPort, 3, payload, sizeof(payload));
+}
+
+void selectBoundSkill(int fd, const ModState &state, int slot) {
+    if (slot < 0 || slot >= 16 || state.hotkeySkills[slot] == 0xffff || state.commandPort <= 0) return;
+    const uint16_t skill = state.hotkeySkills[slot];
+    const uint8_t payload[3] = {static_cast<uint8_t>(state.hotkeyHands[slot] == 1 ? 0 : 1),
+        static_cast<uint8_t>(skill), static_cast<uint8_t>(skill >> 8)};
+    sendModCommand(fd, state.commandPort, 13, payload, sizeof(payload));
 }
 }
 
@@ -319,13 +344,19 @@ void Gamepad::run() {
     bool launcherDpadWasDown[4] = {false, false, false, false};
     Uint32 launcherRepeatAt[4] = {0, 0, 0, 0};
     bool skillWasDown[4] = {false, false, false, false};
+    bool radialWasDown = false;
+    int radialChoice = -1;
     bool runWasDown = false, swapWasDown = false, triggerWasDown = false;
+    bool pointerHidden = false;
+    bool gameCursorHidden = false;
+    Uint32 cursorHudRefreshAt = 0;
+    uint64_t lastPanelSignature = 0;
     bool dpadWasDown[4] = {false, false, false, false};
     bool dpadArrowWasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
     float cursorY = DisplayHeight(display, DefaultScreen(display)) / 2.0f;
-    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение, правый — прицел и выбор цели, A — атаковать/взаимодействовать, LT+Back — карта.")
-                                : QStringLiteral("Gamepad: left stick moves, right stick aims/selects a target, A attacks/interacts, LT+Back opens the map."));
+    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение; ближайшая цель выбирается автоматически, правый стик меняет прицел; A — действие, LT+A — навык; R3 — радиальное меню; крестовина — пояс/навигация; View — инвентарь, LT+View — карта.")
+                                : QStringLiteral("Gamepad: left stick moves; nearest target is selected automatically, right stick aims; A interacts/attacks, LT+A casts; R3 opens radial menu; D-pad uses belt/navigates; View opens inventory, LT+View map."));
 
     while (running_.load()) {
         SDL_Event event;
@@ -359,6 +390,24 @@ void Gamepad::run() {
 
         const Uint32 now = SDL_GetTicks();
         receiveModPackets(modSocket, modState, now);
+        if (modState.fresh(now)) {
+            const uint64_t panelSignature = modState.panelSignature();
+            if (panelSignature != lastPanelSignature && panelSignature) {
+                const int displayWidth = DisplayWidth(display, DefaultScreen(display));
+                const int displayHeight = DisplayHeight(display, DefaultScreen(display));
+                const double sx = static_cast<double>(displayWidth) / std::max(1, modState.gameWidth);
+                const double sy = static_cast<double>(displayHeight) / std::max(1, modState.gameHeight);
+                const bool rightPanel = modState.uiFlags & ((uint64_t{1} << 1) | (uint64_t{1} << 4) |
+                    (uint64_t{1} << 25) | (uint64_t{1} << 26));
+                const bool leftPanel = modState.uiFlags & ((uint64_t{1} << 2) | (uint64_t{1} << 15) |
+                    (uint64_t{1} << 17) | (uint64_t{1} << 36));
+                const double gameX = rightPanel ? modState.gameWidth * 0.78 : leftPanel ? modState.gameWidth * 0.22 : modState.gameWidth * 0.5;
+                cursorX = std::clamp(static_cast<float>(gameX * sx), 0.0f, static_cast<float>(displayWidth - 1));
+                cursorY = std::clamp(static_cast<float>(modState.gameHeight * 0.5 * sy), 0.0f, static_cast<float>(displayHeight - 1));
+                XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
+            }
+            lastPanelSignature = panelSignature;
+        }
         if (!controller && SDL_GetTicks() >= rescanAt) {
             for (int i = 0; i < SDL_NumJoysticks() && !controller; ++i) openController(i);
             rescanAt = SDL_GetTicks() + 1000;
@@ -384,6 +433,7 @@ void Gamepad::run() {
                 dpadWasDown[i] = dpadArrowWasDown[i] = false;
             }
             attack = leftHeld = rightHeld = false;
+            if (pointerHidden) XFixesShowCursor(display, DefaultRootWindow(display)), pointerHidden = false;
             XFlush(display);
             const SDL_GameControllerButton navButtons[4] = {SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
                 SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT};
@@ -434,6 +484,7 @@ void Gamepad::run() {
                 dpadWasDown[i] = dpadArrowWasDown[i] = false;
             }
             attack = leftHeld = rightHeld = false;
+            if (pointerHidden) XFixesShowCursor(display, DefaultRootWindow(display)), pointerHidden = false;
             XFlush(display);
             QThread::msleep(16);
             continue;
@@ -500,6 +551,18 @@ void Gamepad::run() {
         } else {
             cursorMoveX = cursorMoveY = 0;
         }
+        const bool hidePointer = stateFresh && !pointerMode;
+        if (hidePointer != pointerHidden) {
+            if (hidePointer) XFixesHideCursor(display, DefaultRootWindow(display));
+            else XFixesShowCursor(display, DefaultRootWindow(display));
+            pointerHidden = hidePointer;
+        }
+        if (modState.commandPort > 0 && (hidePointer != gameCursorHidden || now >= cursorHudRefreshAt)) {
+            const uint8_t hud[3] = {static_cast<uint8_t>(hidePointer ? 4 : 0), 0, 0};
+            sendModCommand(modSocket, modState.commandPort, 5, hud, sizeof(hud));
+            gameCursorHidden = hidePointer;
+            cursorHudRefreshAt = now + 1000;
+        }
         if (cursorMoveX != 0 || cursorMoveY != 0) {
             cursorX += cursorMoveX * 8.0f;
             cursorY += cursorMoveY * 8.0f;
@@ -512,6 +575,10 @@ void Gamepad::run() {
         const bool attackWasDown = attack;
         const bool layer2 = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
         const bool triggerDown = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
+        if (attackNow && !attackWasDown && layer2 && !pointerMode && stateFresh && modState.commandPort > 0) {
+            if (selectedTarget && selectedTarget->type != 4) sendUnit(modSocket, modState, *selectedTarget, 3, 1);
+            else { mouseButton(display, 3, true); mouseButton(display, 3, false); }
+        }
         if (menuNavigation && attackNow && !attackWasDown) key(display, XK_Return, true), key(display, XK_Return, false);
         attack = attackNow;
         const bool fallbackClickMove = fallbackMove;
@@ -520,7 +587,7 @@ void Gamepad::run() {
         if (directAttackKey && (!attack || !directTarget || selectedKey != directAttackKey)) {
             releaseDirectAttack();
         }
-        const bool targetAction = attack && directTarget && selectedTarget->type != 4;
+        const bool targetAction = attack && !layer2 && directTarget && selectedTarget->type != 4;
         if (targetAction && !directAttackKey) {
             if (selectedTarget->type == 2 || selectedTarget->type == 5) sendUnit(modSocket, modState, *selectedTarget, 3);
             else {
@@ -532,7 +599,7 @@ void Gamepad::run() {
             sendUnit(modSocket, modState, *selectedTarget, 1);
             attackRefreshAt = now + 200;
         }
-        if (attack && !attackWasDown && directTarget && selectedTarget->type == 4) {
+        if (attack && !attackWasDown && !layer2 && directTarget && selectedTarget->type == 4) {
             const uint8_t payload[8] = {selectedTarget->type, 0, 0, 0,
                 static_cast<uint8_t>(selectedTarget->id), static_cast<uint8_t>(selectedTarget->id >> 8),
                 static_cast<uint8_t>(selectedTarget->id >> 16), static_cast<uint8_t>(selectedTarget->id >> 24)};
@@ -580,6 +647,8 @@ void Gamepad::run() {
                 } else if (i == 1 && (menuNavigation || (pointerMode && stateFresh))) {
                     key(display, XK_Escape, true);
                     key(display, XK_Escape, false);
+                } else if (layer2 && i < 3 && stateFresh && modState.commandPort > 0 && modState.hotkeySkills[i + 4] != 0xffff) {
+                    selectBoundSkill(modSocket, modState, i + 4);
                 } else if (i == 3 && layer2) {
                     const uint8_t portal = 0;
                     sendModCommand(modSocket, modState.commandPort, 7, &portal, 1);
@@ -597,7 +666,22 @@ void Gamepad::run() {
         const bool runNow = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_LEFTSTICK);
         const bool swapNow = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
         if (runNow && !runWasDown) key(display, XK_r, true), key(display, XK_r, false);
-        if (swapNow && !swapWasDown) key(display, XK_w, true), key(display, XK_w, false);
+        if (swapNow && !swapWasDown) { radialWasDown = true; radialChoice = -1; emit radialMenuChanged(-2); }
+        if (radialWasDown) {
+            if (std::hypot(rx, ry) > 0.45) {
+                double angle = std::atan2(-ry, rx);
+                if (angle < 0) angle += 2.0 * 3.14159265358979323846;
+                const int nextChoice = (static_cast<int>(std::lround(angle / (3.14159265358979323846 / 4.0))) + 8) % 8;
+                if (nextChoice != radialChoice) emit radialMenuChanged(radialChoice = nextChoice);
+            }
+            if (!swapNow) {
+                const KeySym radialKeys[8] = {XK_i, XK_c, XK_t, XK_q, XK_Tab, XK_Escape, XK_p, XK_w};
+                if (radialChoice >= 0) key(display, radialKeys[radialChoice], true), key(display, radialKeys[radialChoice], false);
+                emit radialMenuChanged(-1);
+                radialWasDown = false;
+                radialChoice = -1;
+            }
+        }
         runWasDown = runNow;
         swapWasDown = swapNow;
         const SDL_GameControllerButton buttons[4] = {SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
@@ -606,11 +690,18 @@ void Gamepad::run() {
         const KeySym beltKeys[4] = {XK_4, XK_3, XK_1, XK_2};
         for (int i = 0; i < 4; ++i) {
             const bool down = SDL_GameControllerGetButton(controller, buttons[i]);
-            const bool arrowMode = menuNavigation;
+            const bool arrowMode = menuNavigation && !modState.escMenu();
             const bool modeChanged = down && dpadWasDown[i] && arrowMode != dpadArrowWasDown[i];
             if (modeChanged && dpadArrowWasDown[i]) key(display, arrows[i], false);
             if (down && (!dpadWasDown[i] || modeChanged)) {
                 if (arrowMode) key(display, arrows[i], true);
+                else if (pointerMode) {
+                    const int gridStep = std::max(20, modState.gameHeight / (modState.escMenu() ? 8 : 20));
+                    const int cursorStep[4][2] = {{0,-gridStep},{0,gridStep},{-gridStep,0},{gridStep,0}};
+                    cursorX = std::clamp(cursorX + cursorStep[i][0], 0.0f, static_cast<float>(DisplayWidth(display, DefaultScreen(display)) - 1));
+                    cursorY = std::clamp(cursorY + cursorStep[i][1], 0.0f, static_cast<float>(DisplayHeight(display, DefaultScreen(display)) - 1));
+                    XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
+                }
                 else if (layer2) {
                     key(display, XK_Shift_L, true);
                     key(display, beltKeys[i], true);
@@ -637,6 +728,7 @@ void Gamepad::run() {
         if (dpadWasDown[i] && dpadArrowWasDown[i]) key(display, arrows[i], false);
     }
     XFlush(display);
+    XFixesShowCursor(display, DefaultRootWindow(display));
     if (modSocket >= 0) close(modSocket);
     if (controller) SDL_GameControllerClose(controller);
     XCloseDisplay(display);

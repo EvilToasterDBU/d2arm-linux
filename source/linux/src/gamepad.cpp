@@ -164,8 +164,8 @@ void Gamepad::run() {
     bool dpadArrowWasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
     float cursorY = DisplayHeight(display, DefaultScreen(display)) / 2.0f;
-    emit statusChanged(russian_ ? QStringLiteral("Управление: левый стик — прямое движение, крестовина — меню/зелья, X/B/Y/RB — навыки.")
-                                : QStringLiteral("Controls: left stick walks directly, D-pad navigates menus or uses potions, X/B/Y/RB select skills."));
+    emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение, правый — курсор цели, A — атаковать/взаимодействовать, LT+Back — карта.")
+                                : QStringLiteral("Gamepad: left stick moves, right stick aims the cursor, A attacks/interacts, LT+Back opens the map."));
 
     while (running_.load()) {
         SDL_Event event;
@@ -312,8 +312,8 @@ void Gamepad::run() {
         }
 
         const bool fallbackMove = moveNow && !pointerMode && (modSocket < 0 || (stateFresh && !modState.canWalk));
-        const float cursorMoveX = pointerMode ? x + rx : (fallbackMove ? x : 0.0f);
-        const float cursorMoveY = pointerMode ? y + ry : (fallbackMove ? y : 0.0f);
+        const float cursorMoveX = pointerMode ? x + rx : (fallbackMove ? x : rx);
+        const float cursorMoveY = pointerMode ? y + ry : (fallbackMove ? y : ry);
         if (cursorMoveX != 0 || cursorMoveY != 0) {
             cursorX += cursorMoveX * 8.0f;
             cursorY += cursorMoveY * 8.0f;
@@ -348,7 +348,11 @@ void Gamepad::run() {
         const bool inventoryDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_BACK);
         const bool showItemsDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
         if (menuDown && !menuWasDown) key(display, XK_Escape, true), key(display, XK_Escape, false);
-        if (inventoryDown && !inventoryWasDown) key(display, XK_i, true), key(display, XK_i, false);
+        if (inventoryDown && !inventoryWasDown) {
+            const KeySym action = layer2 ? XK_Tab : XK_i;
+            key(display, action, true);
+            key(display, action, false);
+        }
         if (showItemsDown != showItemsWasDown) key(display, XK_Alt_L, showItemsDown);
         menuWasDown = menuDown;
         inventoryWasDown = inventoryDown;

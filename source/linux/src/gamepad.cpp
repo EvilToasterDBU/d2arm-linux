@@ -198,6 +198,9 @@ void sendWalk(int fd, const ModState &state, int phase, float x = 0, float y = 0
 const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
     const double aimLength = std::hypot(x, y);
     if (aimLength < 0.01) {
+        for (const AimTarget &target : state.targets) {
+            if (((uint64_t(target.type) << 32) | target.id) == state.aimTargetKey) return &target;
+        }
         state.aimTargetKey = 0;
         return nullptr;
     }
@@ -236,6 +239,24 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
     if (previous && previousScore <= bestScore * 1.15) best = previous;
     state.aimTargetKey = best ? (uint64_t(best->type) << 32) | best->id : 0;
     return best;
+}
+
+void sendUnit(int fd, const ModState &state, const AimTarget &target, int phase) {
+    const uint8_t payload[12] = {0, static_cast<uint8_t>(phase), 0, 0,
+        static_cast<uint8_t>(target.type), 0, 0, 0,
+        static_cast<uint8_t>(target.id), static_cast<uint8_t>(target.id >> 8),
+        static_cast<uint8_t>(target.id >> 16), static_cast<uint8_t>(target.id >> 24)};
+    sendModCommand(fd, state.commandPort, 2, payload, sizeof(payload));
+}
+
+void sendHighlight(int fd, const ModState &state, const AimTarget *target) {
+    const uint32_t type = target ? target->type : 0;
+    const uint32_t id = target ? target->id : 0xffffffffu;
+    const uint8_t payload[8] = {static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8),
+        static_cast<uint8_t>(type >> 16), static_cast<uint8_t>(type >> 24),
+        static_cast<uint8_t>(id), static_cast<uint8_t>(id >> 8),
+        static_cast<uint8_t>(id >> 16), static_cast<uint8_t>(id >> 24)};
+    sendModCommand(fd, state.commandPort, 3, payload, sizeof(payload));
 }
 }
 
@@ -278,10 +299,21 @@ void Gamepad::run() {
     for (int i = 0; i < SDL_NumJoysticks() && !controller; ++i) openController(i);
     Uint32 rescanAt = 0;
     bool attack = false, leftHeld = false, rightHeld = false;
+    uint64_t directAttackKey = 0;
+    Uint32 attackRefreshAt = 0, highlightRefreshAt = 0;
+    uint64_t highlightedKey = 0;
     bool directWalking = false;
     Uint32 walkRefreshAt = 0;
     float lastWalkX = 0, lastWalkY = 0;
     ModState modState;
+    auto releaseDirectAttack = [&]() {
+        if (!directAttackKey) return;
+        AimTarget target;
+        target.type = static_cast<uint8_t>(directAttackKey >> 32);
+        target.id = static_cast<uint32_t>(directAttackKey);
+        sendUnit(modSocket, modState, target, 2);
+        directAttackKey = 0;
+    };
     bool menuWasDown = false, inventoryWasDown = false, showItemsWasDown = false;
     bool launcherAWasDown = false, launcherBWasDown = false;
     bool launcherDpadWasDown[4] = {false, false, false, false};
@@ -302,6 +334,8 @@ void Gamepad::run() {
                 openController(event.cdevice.which);
             } else if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller &&
                        SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)) == event.cdevice.which) {
+                releaseDirectAttack();
+                if (highlightedKey) sendHighlight(modSocket, modState, nullptr), highlightedKey = 0;
                 if (directWalking) sendWalk(modSocket, modState, 2);
                 mouseButton(display, 1, false);
                 mouseButton(display, 3, false);
@@ -334,6 +368,8 @@ void Gamepad::run() {
             continue;
         }
         if (launcherMode_.load()) {
+            releaseDirectAttack();
+            if (highlightedKey) sendHighlight(modSocket, modState, nullptr), highlightedKey = 0;
             if (directWalking) sendWalk(modSocket, modState, 2);
             directWalking = false;
             if (leftHeld || rightHeld || showItemsWasDown) {
@@ -382,6 +418,8 @@ void Gamepad::run() {
             continue;
         }
         if (!enabled_.load()) {
+            releaseDirectAttack();
+            if (highlightedKey) sendHighlight(modSocket, modState, nullptr), highlightedKey = 0;
             if (directWalking) sendWalk(modSocket, modState, 2);
             directWalking = false;
             if (leftHeld || rightHeld || showItemsWasDown) {
@@ -442,20 +480,27 @@ void Gamepad::run() {
         const bool fallbackMove = moveNow && !pointerMode && (modSocket < 0 || (stateFresh && !modState.canWalk));
         float cursorMoveX = pointerMode ? x + rx : (fallbackMove ? x : rx);
         float cursorMoveY = pointerMode ? y + ry : (fallbackMove ? y : ry);
-        bool cursorSnappedToTarget = false;
-        if (!pointerMode && stateFresh && (rx != 0.0f || ry != 0.0f)) {
-            if (const AimTarget *target = chooseAimTarget(modState, rx, ry)) {
-                const float scaleX = DisplayWidth(display, DefaultScreen(display)) /
-                                     static_cast<float>(std::max(1, modState.gameWidth));
-                const float scaleY = DisplayHeight(display, DefaultScreen(display)) /
-                                     static_cast<float>(std::max(1, modState.gameHeight));
-                cursorX = target->x * scaleX;
-                cursorY = target->y * scaleY;
-                cursorMoveX = cursorMoveY = 0;
-                cursorSnappedToTarget = true;
+        const AimTarget *selectedTarget = nullptr;
+        if (!pointerMode && stateFresh && modState.commandPort > 0)
+            selectedTarget = chooseAimTarget(modState, rx, ry);
+        if (selectedTarget) {
+            const uint64_t key = (uint64_t(selectedTarget->type) << 32) | selectedTarget->id;
+            if (key != highlightedKey || now >= highlightRefreshAt) {
+                sendHighlight(modSocket, modState, selectedTarget);
+                highlightedKey = key;
+                highlightRefreshAt = now + 400;
             }
+        } else if (highlightedKey && modSocket >= 0 && modState.commandPort > 0) {
+            sendHighlight(modSocket, modState, nullptr);
+            highlightedKey = 0;
         }
-        if (cursorSnappedToTarget || cursorMoveX != 0 || cursorMoveY != 0) {
+        if (pointerMode) {
+            cursorMoveX = x + rx;
+            cursorMoveY = y + ry;
+        } else {
+            cursorMoveX = cursorMoveY = 0;
+        }
+        if (cursorMoveX != 0 || cursorMoveY != 0) {
             cursorX += cursorMoveX * 8.0f;
             cursorY += cursorMoveY * 8.0f;
             cursorX = std::clamp(cursorX, 0.0f, static_cast<float>(DisplayWidth(display, DefaultScreen(display)) - 1));
@@ -464,12 +509,36 @@ void Gamepad::run() {
         }
 
         const bool attackNow = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_A);
+        const bool attackWasDown = attack;
         const bool layer2 = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
         const bool triggerDown = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
-        if (menuNavigation && attackNow && !attack) key(display, XK_Return, true), key(display, XK_Return, false);
+        if (menuNavigation && attackNow && !attackWasDown) key(display, XK_Return, true), key(display, XK_Return, false);
         attack = attackNow;
         const bool fallbackClickMove = fallbackMove;
-        const bool wantLeft = (attack && !menuNavigation) || fallbackClickMove;
+        const bool directTarget = !menuNavigation && !pointerMode && stateFresh && modState.commandPort > 0 && selectedTarget;
+        const uint64_t selectedKey = directTarget ? (uint64_t(selectedTarget->type) << 32) | selectedTarget->id : 0;
+        if (directAttackKey && (!attack || !directTarget || selectedKey != directAttackKey)) {
+            releaseDirectAttack();
+        }
+        const bool targetAction = attack && directTarget && selectedTarget->type != 4;
+        if (targetAction && !directAttackKey) {
+            if (selectedTarget->type == 2 || selectedTarget->type == 5) sendUnit(modSocket, modState, *selectedTarget, 3);
+            else {
+                sendUnit(modSocket, modState, *selectedTarget, 0);
+                directAttackKey = selectedKey;
+                attackRefreshAt = now + 200;
+            }
+        } else if (targetAction && directAttackKey && now >= attackRefreshAt) {
+            sendUnit(modSocket, modState, *selectedTarget, 1);
+            attackRefreshAt = now + 200;
+        }
+        if (attack && !attackWasDown && directTarget && selectedTarget->type == 4) {
+            const uint8_t payload[8] = {selectedTarget->type, 0, 0, 0,
+                static_cast<uint8_t>(selectedTarget->id), static_cast<uint8_t>(selectedTarget->id >> 8),
+                static_cast<uint8_t>(selectedTarget->id >> 16), static_cast<uint8_t>(selectedTarget->id >> 24)};
+            sendModCommand(modSocket, modState.commandPort, 15, payload, sizeof(payload));
+        }
+        const bool wantLeft = (attack && menuNavigation) || fallbackClickMove || (attack && !stateFresh);
         if (wantLeft != leftHeld) mouseButton(display, 1, wantLeft), leftHeld = wantLeft;
         if (triggerDown && !triggerWasDown && !layer2) key(display, XK_F5, true), key(display, XK_F5, false);
         if (triggerDown && !triggerWasDown && layer2) {
@@ -557,6 +626,8 @@ void Gamepad::run() {
         QThread::msleep(16);
     }
 
+    releaseDirectAttack();
+    if (highlightedKey) sendHighlight(modSocket, modState, nullptr);
     if (directWalking) sendWalk(modSocket, modState, 2);
     if (leftHeld) mouseButton(display, 1, false);
     if (rightHeld) mouseButton(display, 3, false);

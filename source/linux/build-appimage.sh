@@ -22,7 +22,13 @@ if [ "${D2_SKIP_ASSET_BUILD:-0}" = 1 ]; then
 else
   bash "$REPO_DIR/tools/build-linux-assets.sh"
 fi
-bash "$REPO_DIR/tools/build-arm-linux-runtime.sh"
+if [ "${D2_SKIP_RUNTIME_BUILD:-0}" = 1 ]; then
+  for runtime_file in "$ROOT/assets/runtime/box64/bin/box64" "$ROOT/assets/runtime/wine/bin/wine"; do
+    [ -x "$runtime_file" ] || { echo "Missing bundled runtime: $runtime_file" >&2; exit 1; }
+  done
+else
+  bash "$REPO_DIR/tools/build-arm-linux-runtime.sh"
+fi
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
 cmake --build "$BUILD_DIR" --parallel

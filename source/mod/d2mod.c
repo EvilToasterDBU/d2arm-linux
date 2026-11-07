@@ -3022,8 +3022,9 @@ static void drinkPotion(void* player, int kind, int allowInventory, int toMerc, 
         *(WORD*) (packet + 5) = path ? (WORD) (RD32(path, PATH_X) >> 16) : 0;
         *(WORD*) (packet + 9) = path ? (WORD) (RD32(path, PATH_Y) >> 16) : 0;
     }
-    fSendPacket(13, 1, packet);
+    // Resolve item-dependent sound before consumption can remove the unit.
     int sound = playUseSound(bestItem);
+    fSendPacket(13, 1, packet);
     logLine("drink kind %d tier %d from the %s%s%s, sound %d", kind, bestTier, bestBelt ? "belt" : "inventory",
         largest ? " (largest)" : "", limit ? " (bigger)" : "", sound);
 }
@@ -3377,7 +3378,12 @@ static void handleCommands(void* player, int stale) {
         if (cmd == 32) selfCheckCommand(buf, n);
         if (cmd == CMD_LAYER) layerCommand(buf, n);
         if (cmd == CMD_SOUND && player) soundCommand(buf, n);
-        if (cmd == CMD_DRINK && n >= 9 && player) {
+        if (cmd == CMD_DRINK && n >= 9 && player && !stale && fSendPacket) {
+            static DWORD drinkCommandAt;
+            DWORD now = GetTickCount();
+            if (drinkCommandAt && now - drinkCommandAt < 350) continue;
+            if (buf[8] > 3) continue;
+            drinkCommandAt = now;
             int kind = buf[8] == 1 ? 2 : (buf[8] == 2 ? 3 : (buf[8] == 3 ? 5 : 1));
 
 

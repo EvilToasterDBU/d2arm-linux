@@ -286,7 +286,7 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         // Undo the isometric projection for a short, roughly one-metre interaction radius.
         const double interactionDistance = std::hypot(dx / 32.0, dy / 16.0);
         if ((object || target.type == 4) && interactionDistance > 3.0) continue;
-        if (target.type == 2 && target.kind == 0) continue;
+        if (npc && interactionDistance > 15.0) continue;
         const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
         const int priority = enemy ? 0 : object ? 1 : npc ? 2 : 3;
         const double score = priority * 1000000.0 + distance * (directional ? (1.5 - dot) : 1.0);
@@ -395,6 +395,7 @@ void Gamepad::run() {
     bool skillWasDown[4] = {false, false, false, false};
     bool runWasDown = false, swapWasDown = false;
     bool potionWasDown[2] = {false, false};
+    Uint32 potionReadyAt = 0;
     bool rtChordWasDown[4] = {false, false, false, false};
     uint8_t lastHintMode = 0xff, lastHintButtons = 0xff;
     auto clearGamepadHints = [&]() {
@@ -703,9 +704,10 @@ void Gamepad::run() {
         const SDL_GameControllerButton potionButtons[2] = {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER};
         for (int i = 0; i < 2; ++i) {
             const bool down = SDL_GameControllerGetButton(controller, potionButtons[i]);
-            if (down && !potionWasDown[i] && stateFresh && modState.commandPort > 0) {
+            if (down && !potionWasDown[i] && stateFresh && modState.commandPort > 0 && now >= potionReadyAt) {
                 const uint8_t potion[2] = {static_cast<uint8_t>(i), 0};
                 sendModCommand(modSocket, modState.commandPort, 1, potion, sizeof(potion));
+                potionReadyAt = now + 350;
             }
             potionWasDown[i] = down;
         }

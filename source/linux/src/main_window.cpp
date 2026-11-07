@@ -221,7 +221,7 @@ void MainWindow::launchGame() {
         env.insert("WINEPREFIX", prefix);
         env.insert("WINEARCH", "win64");
         env.insert("WINEDEBUG", "-all");
-        env.insert("WINEDLLOVERRIDES", "glide3x=n,b");
+        env.insert("WINEDLLOVERRIDES", "mscoree,mshtml=d;glide3x=n,b");
         const QString wineRoot = runtimeFile("runtime/wine");
         const QString wineLib = QDir(wineRoot).filePath("lib");
         const QString wineUnixLib = QDir(wineLib).filePath("wine/x86_64-unix");

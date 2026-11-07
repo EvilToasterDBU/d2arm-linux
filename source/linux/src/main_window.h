@@ -26,6 +26,7 @@ private slots:
     void processOutput();
     void processFinished(int exitCode, QProcess::ExitStatus status);
     void onGamepadStatus(const QString &status);
+    void onLauncherAction(int action);
 
 private:
     QString trText(const char *en, const char *ru) const;

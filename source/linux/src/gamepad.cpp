@@ -22,6 +22,7 @@ Gamepad::Gamepad(QObject *parent) : QThread(parent) {}
 Gamepad::~Gamepad() { stop(); }
 
 void Gamepad::setEnabled(bool enabled) { enabled_.store(enabled); }
+void Gamepad::setLauncherMode(bool enabled) { launcherMode_.store(enabled); }
 void Gamepad::setRussian(bool russian) { russian_.store(russian); }
 void Gamepad::stop() {
     running_.store(false);
@@ -45,6 +46,9 @@ void Gamepad::run() {
     SDL_GameController *controller = nullptr;
     bool moving = false, attack = false, skill = false, leftHeld = false;
     bool menuWasDown = false, inventoryWasDown = false, showItemsWasDown = false;
+    bool launcherAWasDown = false, launcherBWasDown = false;
+    bool launcherDpadWasDown[4] = {false, false, false, false};
+    Uint32 launcherRepeatAt[4] = {0, 0, 0, 0};
     bool skillWasDown[4] = {false, false, false, false};
     bool runWasDown = false, swapWasDown = false, triggerWasDown = false;
     bool beltWasDown[4] = {false, false, false, false};
@@ -70,14 +74,58 @@ void Gamepad::run() {
             }
         }
 
-        if (!enabled_.load() || !controller) {
+        if (!controller) {
+            QThread::msleep(15);
+            continue;
+        }
+        if (launcherMode_.load()) {
             if (leftHeld || skill) {
                 mouseButton(display, 1, false);
                 mouseButton(display, 3, false);
                 moving = attack = skill = leftHeld = false;
                 XFlush(display);
             }
-            QThread::msleep(15);
+            const Uint32 now = SDL_GetTicks();
+            const SDL_GameControllerButton navButtons[4] = {SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
+                SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT};
+            for (int i = 0; i < 4; ++i) {
+                const bool down = SDL_GameControllerGetButton(controller, navButtons[i]);
+                if (down && (!launcherDpadWasDown[i] || now >= launcherRepeatAt[i])) {
+                    emit launcherAction((i == 0 || i == 2) ? 0 : 1);
+                    launcherRepeatAt[i] = now + 300;
+                }
+                launcherDpadWasDown[i] = down;
+            }
+            const Sint16 ly = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
+            const bool stickUp = ly < -18000;
+            const bool stickDown = ly > 18000;
+            if ((stickUp || stickDown) && now >= launcherRepeatAt[0]) {
+                emit launcherAction(stickUp ? 0 : 1);
+                launcherRepeatAt[0] = now + 300;
+            }
+            const bool aDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_A);
+            const bool bDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_B);
+            if (aDown && !launcherAWasDown) emit launcherAction(2);
+            if (bDown && !launcherBWasDown) emit launcherAction(4);
+            launcherAWasDown = aDown;
+            launcherBWasDown = bDown;
+            const bool startDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_START);
+            const bool backDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_BACK);
+            if (startDown && !menuWasDown) emit launcherAction(3);
+            if (backDown && !inventoryWasDown) emit launcherAction(4);
+            menuWasDown = startDown;
+            inventoryWasDown = backDown;
+            QThread::msleep(16);
+            continue;
+        }
+        if (!enabled_.load()) {
+            if (leftHeld || skill) {
+                mouseButton(display, 1, false);
+                mouseButton(display, 3, false);
+                moving = attack = skill = leftHeld = false;
+                XFlush(display);
+            }
+            QThread::msleep(16);
             continue;
         }
 

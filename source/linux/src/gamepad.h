@@ -9,11 +9,13 @@ public:
     explicit Gamepad(QObject *parent = nullptr);
     ~Gamepad() override;
     void setEnabled(bool enabled);
+    void setLauncherMode(bool enabled);
     void setRussian(bool russian);
     void stop();
 
 signals:
     void statusChanged(const QString &status);
+    void launcherAction(int action);
 
 protected:
     void run() override;
@@ -21,5 +23,6 @@ protected:
 private:
     std::atomic_bool running_{false};
     std::atomic_bool enabled_{false};
+    std::atomic_bool launcherMode_{true};
     std::atomic_bool russian_{false};
 };

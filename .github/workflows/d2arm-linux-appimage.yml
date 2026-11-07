@@ -17,7 +17,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev libsdl2-dev libx11-dev libxtst-dev \
-            gcc-mingw-w64-i686 g++-mingw-w64-i686 binutils-mingw-w64-i686 curl unzip python3 librsvg2-bin
+            gcc-mingw-w64-i686 g++-mingw-w64-i686 binutils-mingw-w64-i686 curl unzip python3 librsvg2-bin \
+            libepoxy-dev libxext-dev libxrender-dev libxfixes-dev libxrandr-dev libxcursor-dev libxi-dev libxinerama-dev
       - name: Install AppImage tools
         run: |
           mkdir -p "$HOME/.local/bin"

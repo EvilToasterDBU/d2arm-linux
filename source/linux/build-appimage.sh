@@ -22,6 +22,7 @@ if [ "${D2_SKIP_ASSET_BUILD:-0}" = 1 ]; then
 else
   bash "$REPO_DIR/tools/build-linux-assets.sh"
 fi
+bash "$REPO_DIR/tools/build-arm-linux-runtime.sh"
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
 cmake --build "$BUILD_DIR" --parallel

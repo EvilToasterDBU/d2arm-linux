@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include <QCoreApplication>
+#include <QApplication>
 #include <QCheckBox>
 #include <QDir>
 #include <QDirIterator>
@@ -18,6 +19,7 @@
 #include <QSettings>
 #include <QLocale>
 #include <QProcessEnvironment>
+#include <QKeyEvent>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -55,8 +57,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     };
     makePathRow(trText("Game folder", "Папка игры"), gameDir_,
                 trText("Folder containing Game.exe", "Папка с Game.exe"), "Browse…", &MainWindow::browseGameDirectory);
-    makePathRow(trText("Box64", "Box64"), box64_, QStringLiteral("box64"), "Browse…", &MainWindow::browseBox64);
-    makePathRow(trText("Wine x86_64 binary", "Исполняемый файл Wine x86_64"), wine64_, QStringLiteral("wine64"),
+    makePathRow(trText("Box64 (bundled)", "Box64 (в комплекте)"), box64_, QStringLiteral("box64"), "Browse…", &MainWindow::browseBox64);
+    makePathRow(trText("Wine WoW64 (bundled)", "Wine WoW64 (в комплекте)"), wine64_, QStringLiteral("wine"),
                 "Browse…", &MainWindow::browseWine);
     root->addLayout(form);
 
@@ -86,6 +88,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     log_->setMaximumBlockCount(3000);
     root->addWidget(log_, 1);
     setCentralWidget(central);
+    launch_->setFocus();
 
     connect(launch_, &QPushButton::clicked, this, &MainWindow::launchGame);
     connect(stop_, &QPushButton::clicked, this, &MainWindow::stopGame);
@@ -93,6 +96,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(&process_, &QProcess::readyReadStandardError, this, &MainWindow::processOutput);
     connect(&process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &MainWindow::processFinished);
     connect(&gamepad_, &Gamepad::statusChanged, this, &MainWindow::onGamepadStatus);
+    connect(&gamepad_, &Gamepad::launcherAction, this, &MainWindow::onLauncherAction);
 
     restoreSettings();
     applyStyle();
@@ -111,8 +115,10 @@ QString MainWindow::trText(const char *en, const char *ru) const {
 void MainWindow::restoreSettings() {
     QSettings s;
     gameDir_->setText(s.value("gameDirectory").toString());
-    box64_->setText(s.value("box64", QStandardPaths::findExecutable("box64")).toString());
-    wine64_->setText(s.value("wine64", QStandardPaths::findExecutable("wine64")).toString());
+    const QString bundledBox = runtimeFile("runtime/box64/bin/box64");
+    const QString bundledWine = runtimeFile("runtime/wine/bin/wine");
+    box64_->setText(s.value("box64", QFileInfo(bundledBox).isExecutable() ? bundledBox : QStandardPaths::findExecutable("box64")).toString());
+    wine64_->setText(s.value("wine64", QFileInfo(bundledWine).isExecutable() ? bundledWine : QStandardPaths::findExecutable("wine")).toString());
     gamepadEnabled_->setChecked(s.value("gamepadEnabled", true).toBool());
 }
 
@@ -185,7 +191,7 @@ void MainWindow::browseBox64() {
 }
 
 void MainWindow::browseWine() {
-    const QString path = QFileDialog::getOpenFileName(this, trText("Select Wine x86_64", "Выберите Wine x86_64"), wine64_->text());
+    const QString path = QFileDialog::getOpenFileName(this, trText("Select Wine WoW64", "Выберите Wine WoW64"), wine64_->text());
     if (!path.isEmpty()) wine64_->setText(path);
 }
 
@@ -202,8 +208,8 @@ void MainWindow::launchGame() {
     }
     if (box.isEmpty() || wine.isEmpty()) {
         QMessageBox::warning(this, trText("Runtime not found", "Runtime не найден"),
-                             trText("Install Box64 and a 32-bit-game-capable x86_64 Wine build, then select their executables.",
-                                    "Установите Box64 и сборку Wine x86_64 с поддержкой 32-битных игр и укажите исполняемые файлы."));
+                             trText("The bundled Box64/Wine runtime is missing. Re-download the AppImage or select compatible executables.",
+                                    "В AppImage не найден встроенный runtime Box64/Wine. Скачайте AppImage заново или укажите совместимые исполняемые файлы."));
         return;
     }
     try {
@@ -215,6 +221,17 @@ void MainWindow::launchGame() {
         env.insert("WINEPREFIX", prefix);
         env.insert("WINEDEBUG", "-all");
         env.insert("WINEDLLOVERRIDES", "glide3x=n,b");
+        const QString wineRoot = runtimeFile("runtime/wine");
+        const QString wineLib = QDir(wineRoot).filePath("lib");
+        const QString wineUnixLib = QDir(wineLib).filePath("wine/x86_64-unix");
+        const QString box64Lib = runtimeFile("runtime/box64/lib");
+        const QString box64MultiarchLib = runtimeFile("runtime/box64/lib/aarch64-linux-gnu");
+        QStringList hostLibPaths = {box64Lib, box64MultiarchLib};
+        if (env.contains("LD_LIBRARY_PATH")) hostLibPaths.append(env.value("LD_LIBRARY_PATH"));
+        env.insert("LD_LIBRARY_PATH", hostLibPaths.join(QLatin1Char(':')));
+        if (QFileInfo(runtimeFile("runtime/box64/bin/box64")).isExecutable() &&
+            QFileInfo::exists(QDir(wineLib).filePath("wine")))
+            env.insert("BOX64_LD_LIBRARY_PATH", wineUnixLib + QLatin1Char(':') + wineLib);
         process_.setProcessEnvironment(env);
         process_.setWorkingDirectory(shadow);
         process_.setProgram(box);
@@ -224,11 +241,14 @@ void MainWindow::launchGame() {
         status_->setText(trText("Starting…", "Запуск…"));
         launch_->setEnabled(false);
         stop_->setEnabled(true);
-        if (gamepadEnabled_->isChecked()) gamepad_.setEnabled(true);
+        gamepad_.setLauncherMode(false);
+        gamepad_.setEnabled(gamepadEnabled_->isChecked());
         process_.start();
         if (!process_.waitForStarted(5000)) throw std::runtime_error(process_.errorString().toStdString());
         saveSettings();
     } catch (const std::exception &e) {
+        gamepad_.setEnabled(false);
+        gamepad_.setLauncherMode(true);
         launch_->setEnabled(true);
         stop_->setEnabled(false);
         status_->setText(trText("Launch setup failed", "Ошибка подготовки запуска"));
@@ -249,6 +269,7 @@ void MainWindow::processOutput() {
 
 void MainWindow::processFinished(int exitCode, QProcess::ExitStatus status) {
     gamepad_.setEnabled(false);
+    gamepad_.setLauncherMode(true);
     launch_->setEnabled(true);
     stop_->setEnabled(false);
     status_->setText(trText("Game closed", "Игра закрыта"));
@@ -261,11 +282,45 @@ void MainWindow::onGamepadStatus(const QString &status) {
     appendLog(status);
 }
 
+void MainWindow::onLauncherAction(int action) {
+    // Actions: 0/1 = previous/next focus, 2 = activate, 3 = launch, 4 = stop.
+    QWidget *focused = QApplication::focusWidget();
+    if (process_.state() != QProcess::NotRunning) {
+        if (action == 4) stopGame();
+        return;
+    }
+    if (action == 0 || action == 1) {
+        if (focused) {
+            const int key = action == 0 ? Qt::Key_Backtab : Qt::Key_Tab;
+            QKeyEvent press(QEvent::KeyPress, key, action == 0 ? Qt::ShiftModifier : Qt::NoModifier);
+            QKeyEvent release(QEvent::KeyRelease, key, action == 0 ? Qt::ShiftModifier : Qt::NoModifier);
+            QApplication::sendEvent(focused, &press);
+            QApplication::sendEvent(focused, &release);
+        }
+    } else if (action == 2) {
+        if (auto *button = qobject_cast<QPushButton *>(focused)) button->click();
+        else if (auto *check = qobject_cast<QCheckBox *>(focused)) check->toggle();
+        else if (focused) {
+            QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(focused, &press);
+            QApplication::sendEvent(focused, &release);
+        }
+    } else if (action == 3) launch_->click();
+    else if (action == 4 && QApplication::activeModalWidget() && focused) {
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(focused, &press);
+        QApplication::sendEvent(focused, &release);
+    }
+}
+
 void MainWindow::appendLog(const QString &line) { log_->appendPlainText(line); }
 
 void MainWindow::applyStyle() {
     setStyleSheet("QMainWindow, QWidget { background: #171717; color: #e9dfc7; }"
                   "QLineEdit, QPlainTextEdit { background: #242424; border: 1px solid #765f37; padding: 6px; }"
                   "QPushButton { background: #42331d; border: 1px solid #a6874b; padding: 7px 14px; }"
-                  "QPushButton:hover { background: #574321; } QPushButton:disabled { color: #777; }");
+                  "QPushButton:hover { background: #574321; } QPushButton:focus, QLineEdit:focus, QCheckBox:focus { outline: 2px solid #e0b44c; }"
+                  "QPushButton:disabled { color: #777; }");
 }

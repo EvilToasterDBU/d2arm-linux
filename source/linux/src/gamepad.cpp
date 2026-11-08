@@ -185,8 +185,17 @@ std::vector<FocusPoint> inventoryFocusPoints(const ModState &state) {
         add(x * state.gameWidth / 1920.0f, y * state.gameHeight / 1080.0f);
     };
 
+    // These overlays own the cursor while open; never mix their targets with
+    // the player inventory or another panel's focus map.
+    if (state.skillTreeOpen()) return points;
+    if (state.quickSkillsOpen()) {
+        addRef(1620, 660); addRef(1710, 660); addRef(1710, 757);
+        addRef(1548, 857); addRef(1638, 857); addRef(1728, 857);
+        return points;
+    }
+
     const bool leftPanelOpen = open(25) || open(26) || open(12) || open(23) || open(2) ||
-        open(4) || open(15) || open(17) || open(20);
+        open(15) || open(17) || open(20);
 
     if (open(1) || leftPanelOpen) {
         // Keep the established player inventory and equipment focus map unchanged.
@@ -234,16 +243,6 @@ std::vector<FocusPoint> inventoryFocusPoints(const ModState &state) {
         addRef(610, 870); // close character sheet
     }
 
-    if (open(4)) {
-        // Skill icons come from SkillDesc and the game's own column/row hit-test API.
-        const auto tree = state.skillFocusPoints;
-        for (const auto &point : tree) add(point.x, point.y);
-        // Skill nodes come from the game's own skill descriptor API; only the
-        // three class tabs need a measured fallback map.
-        constexpr float tabY[] = {381, 601, 813};
-        for (float y : tabY) addRef(1508, y);
-    }
-
     if (open(15) || open(17)) {
         constexpr float tabX[] = {395, 519, 643, 767, 891};
         for (float x : tabX) addRef(x, 89);
@@ -262,12 +261,6 @@ std::vector<FocusPoint> inventoryFocusPoints(const ModState &state) {
         addRef(897, 865); // close waypoint window
     }
 
-    if (state.quickSkillsOpen()) {
-        const float x1 = state.gameWidth - 215.0f, x2 = state.gameWidth - 170.0f, x3 = state.gameWidth - 125.0f;
-        const float y1 = state.gameHeight - 238.0f, y2 = state.gameHeight - 190.0f, y3 = state.gameHeight - 142.0f;
-        add(x2, y1); add(x3, y1); add(x3, y2);
-        add(x1, y3); add(x2, y3); add(x3, y3);
-    }
     return points;
 }
 
@@ -480,8 +473,8 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         // World sprites keep their pixel size as render resolution changes.
         // Undo the isometric projection for a short, roughly one-metre interaction radius.
         const double interactionDistance = std::hypot(dx / 32.0, dy / 16.0);
-        if ((object || target.type == 4) && interactionDistance > 3.0) continue;
-        if (npc && interactionDistance > 15.0) continue;
+        if ((object || target.type == 4) && interactionDistance > 1.0) continue;
+        if (npc && interactionDistance > 5.0) continue;
         const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
         const int priority = enemy ? 0 : object ? 1 : npc ? 2 : 3;
         const double score = priority * 1000000.0 + distance * (directional ? (1.5 - dot) : 1.0);
@@ -1000,7 +993,10 @@ void Gamepad::run() {
         const KeySym beltKeys[4] = {XK_4, XK_3, XK_1, XK_2};
         for (int i = 0; i < 4; ++i) {
             const bool down = SDL_GameControllerGetButton(controller, buttons[i]);
-            const bool arrowMode = menuNavigation && !modState.escMenu();
+            const bool mappedControls = stateFresh && (modState.skillTreeOpen()
+                ? (modState.skillFocusReady && !modState.skillFocusPoints.empty())
+                : !inventoryFocusPoints(modState).empty());
+            const bool arrowMode = menuNavigation && !modState.escMenu() && !mappedControls;
             const bool modeChanged = down && dpadWasDown[i] && arrowMode != dpadArrowWasDown[i];
             if (modeChanged && dpadArrowWasDown[i]) key(display, arrows[i], false);
             if (down && (!dpadWasDown[i] || modeChanged)) {
@@ -1008,17 +1004,17 @@ void Gamepad::run() {
                 else if (pointerMode) {
                     const float displayW = static_cast<float>(DisplayWidth(display, DefaultScreen(display)));
                     const float displayH = static_cast<float>(DisplayHeight(display, DefaultScreen(display)));
-                    if (stateFresh && !inventoryFocusPoints(modState).empty()) {
-                        const float sx = displayW / std::max(1, modState.gameWidth);
-                        const float sy = displayH / std::max(1, modState.gameHeight);
-                        const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy, i);
-                        cursorX = focus.x * sx;
-                        cursorY = focus.y * sy;
-                    } else if (stateFresh && modState.skillTreeOpen() && modState.skillFocusReady &&
+                    if (stateFresh && modState.skillTreeOpen() && modState.skillFocusReady &&
                                !modState.skillFocusPoints.empty()) {
                         const float sx = displayW / std::max(1, modState.gameWidth);
                         const float sy = displayH / std::max(1, modState.gameHeight);
                         const auto focus = skillTreeFocus(modState, cursorX / sx, cursorY / sy, i);
+                        cursorX = focus.x * sx;
+                        cursorY = focus.y * sy;
+                    } else if (stateFresh && !inventoryFocusPoints(modState).empty()) {
+                        const float sx = displayW / std::max(1, modState.gameWidth);
+                        const float sy = displayH / std::max(1, modState.gameHeight);
+                        const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy, i);
                         cursorX = focus.x * sx;
                         cursorY = focus.y * sy;
                     } else if (!modState.uiFocusPoints.empty() &&

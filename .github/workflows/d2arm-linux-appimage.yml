@@ -24,8 +24,7 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           bash source/tools/download-github-release-asset.sh linuxdeploy/linuxdeploy continuous linuxdeploy-aarch64.AppImage "$HOME/.local/bin/linuxdeploy"
           bash source/tools/download-github-release-asset.sh linuxdeploy/linuxdeploy-plugin-qt continuous linuxdeploy-plugin-qt-aarch64.AppImage "$HOME/.local/bin/linuxdeploy-plugin-qt"
-          bash source/tools/download-github-release-asset.sh AppImage/AppImageKit continuous appimagetool-aarch64.AppImage "$HOME/.local/bin/appimagetool"
-          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-qt" "$HOME/.local/bin/appimagetool"
+          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-qt"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build AppImage
         run: source/linux/build-appimage.sh

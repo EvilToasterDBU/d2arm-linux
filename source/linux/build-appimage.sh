@@ -54,10 +54,10 @@ export LDAI_OUTPUT="$ROOT/dist/d2arm-linux-aarch64.AppImage"
 export LDAI_NO_APPSTREAM=1
 RUNTIME_FILE="$BUILD_DIR/runtime-aarch64"
 bash "$REPO_DIR/tools/download-github-release-asset.sh" AppImage/type2-runtime continuous runtime-aarch64 "$RUNTIME_FILE"
+export LDAI_RUNTIME_FILE="$RUNTIME_FILE"
 linuxdeploy --appdir "$APPDIR" \
   --executable "$BUILD_DIR/d2arm-linux" \
   --desktop-file "$ROOT/share/d2arm-linux.desktop" \
   --icon-file "$ROOT/share/d2arm-linux.svg" \
-  --plugin qt
-ARCH=aarch64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool --no-appstream --runtime-file "$RUNTIME_FILE" "$APPDIR" "$LDAI_OUTPUT"
+  --plugin qt --output appimage
 echo "Built $ROOT/dist/d2arm-linux-aarch64.AppImage"

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(D2ArmLinux VERSION 0.1.4 LANGUAGES CXX)
+project(D2ArmLinux VERSION 0.1.5 LANGUAGES CXX)
 
 set(D2_DISPLAY_VERSION "${PROJECT_VERSION}")
 if("$ENV{GITHUB_REF_NAME}" MATCHES "^v(.+)$")

@@ -59,8 +59,11 @@ struct ModState {
     bool inTown = false;
     int playerX = 0;
     int playerY = 0;
+    int leftSkill = -1;
+    int rightSkill = -1;
     uint64_t aimTargetKey = 0;
     std::vector<AimTarget> targets;
+    std::vector<AimTarget> corpses;
     uint16_t hotkeySkills[16]{};
     uint8_t hotkeyHands[16]{};
     bool skillFocusOpen = false;
@@ -109,6 +112,7 @@ int16_t readI16(const uint8_t *p) {
 
 void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
     state.targets.clear();
+    state.corpses.clear();
     if (length < 59) return;
 
     // The state header sends a raw monster count before the filtered list size.
@@ -155,13 +159,32 @@ void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
         state.targets.push_back(target);
         offset += 10;
     }
-    // The state packet ends its target lists with class/current skills and 16 hotkey slots.
+    // The packet follows the target lists with active skill ids and hotkeys.
     if (offset + 53 <= length) {
-        offset += 5; // class, left hand skill, right hand skill
+        state.leftSkill = readU16(packet + offset + 1);
+        state.rightSkill = readU16(packet + offset + 3);
+        offset += 5;
         for (int i = 0; i < 16; ++i) {
             state.hotkeySkills[i] = readU16(packet + offset);
             state.hotkeyHands[i] = packet[offset + 2];
             offset += 3;
+        }
+        if (offset >= length) return;
+        const size_t damaged = packet[offset++];
+        if (offset + damaged * 2 + 10 > length) return;
+        offset += damaged * 2 + 10; // durability, vitals, game-state bits and portal charges
+        if (offset >= length) return;
+        const size_t corpseCount = packet[offset++];
+        if (corpseCount > 64 || offset + corpseCount * 8 > length) return;
+        for (size_t i = 0; i < corpseCount; ++i) {
+            AimTarget corpse;
+            corpse.type = 1;
+            corpse.kind = 7;
+            corpse.id = readU32(packet + offset);
+            corpse.x = readI16(packet + offset + 4);
+            corpse.y = readI16(packet + offset + 6);
+            state.corpses.push_back(corpse);
+            offset += 8;
         }
     }
 }
@@ -473,8 +496,11 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         // World sprites keep their pixel size as render resolution changes.
         // Undo the isometric projection for a short, roughly one-metre interaction radius.
         const double interactionDistance = std::hypot(dx / 32.0, dy / 16.0);
-        if ((object || target.type == 4) && interactionDistance > 1.0) continue;
-        if (npc && interactionDistance > 5.0) continue;
+        const bool stash = object && (target.kind == 0 ||
+            (state.uiFlags & ((uint64_t{1} << 25) | (uint64_t{1} << 26))));
+        if (object && interactionDistance > (stash ? 2.0 : 1.0)) continue;
+        if (target.type == 4 && interactionDistance > 1.0) continue;
+        if (npc && interactionDistance > 3.0) continue;
         const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
         const int priority = enemy ? 0 : object ? 1 : npc ? 2 : 3;
         const double score = priority * 1000000.0 + distance * (directional ? (1.5 - dot) : 1.0);
@@ -492,6 +518,33 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
     if (previous && static_cast<int>(previousScore / 1000000.0) == static_cast<int>(bestScore / 1000000.0) &&
         std::fmod(previousScore, 1000000.0) <= std::fmod(bestScore, 1000000.0) * 1.15) best = previous;
     state.aimTargetKey = best ? (uint64_t(best->type) << 32) | best->id : 0;
+    return best;
+}
+
+bool isCorpseSkill(int skill) {
+    switch (skill) {
+        case 70: case 74: case 80: case 95: case 131: case 142: case 150: return true;
+        default: return false;
+    }
+}
+
+const AimTarget *chooseCorpseTarget(const ModState &state, float x, float y) {
+    const double aimLength = std::hypot(x, y);
+    const bool directional = aimLength >= 0.18;
+    if (directional) x /= static_cast<float>(aimLength), y /= static_cast<float>(aimLength);
+    const AimTarget *best = nullptr;
+    double bestScore = std::numeric_limits<double>::max();
+    for (const AimTarget &corpse : state.corpses) {
+        const double dx = corpse.x - state.playerX, dy = corpse.y - state.playerY;
+        const double distance = std::hypot(dx, dy);
+        const double interactionDistance = std::hypot(dx / 32.0, dy / 16.0);
+        if (corpse.x < 0 || corpse.x >= state.gameWidth || corpse.y < 0 || corpse.y >= state.gameHeight - 48 ||
+            interactionDistance > 20.0) continue;
+        const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
+        if (directional && dot < 0.0) continue;
+        const double score = interactionDistance * (directional ? (1.5 - dot) : 1.0);
+        if (score < bestScore) best = &corpse, bestScore = score;
+    }
     return best;
 }
 
@@ -562,7 +615,7 @@ void Gamepad::run() {
     Uint32 rescanAt = 0;
     bool attack = false, leftHeld = false, rightHeld = false;
     uint64_t directAttackKey = 0;
-    Uint32 attackRefreshAt = 0, highlightRefreshAt = 0;
+    Uint32 attackRefreshAt = 0, highlightRefreshAt = 0, corpseCastRefreshAt = 0;
     uint64_t highlightedKey = 0;
     bool directWalking = false;
     Uint32 walkRefreshAt = 0;
@@ -871,6 +924,9 @@ void Gamepad::run() {
         const bool attackWasDown = attack;
         const bool layer2 = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
         const bool triggerDown = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
+        const bool corpseSkill = isCorpseSkill(layer2 ? modState.rightSkill : modState.leftSkill);
+        const AimTarget *corpseTarget = corpseSkill && !pointerMode && stateFresh && !triggerDown &&
+            !menuNavigation && modState.commandPort > 0 ? chooseCorpseTarget(modState, rx, ry) : nullptr;
         const SDL_GameControllerButton chordButtons[4] = {SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_B,
             SDL_CONTROLLER_BUTTON_X, SDL_CONTROLLER_BUTTON_Y};
         const KeySym rtKeys[4] = {XK_i, XK_c, XK_q, XK_t};
@@ -890,19 +946,28 @@ void Gamepad::run() {
             lastHintButtons = hintButtons;
         }
         if (attackNow && !attackWasDown && layer2 && !triggerDown && !pointerMode && stateFresh && modState.commandPort > 0) {
-            if (selectedTarget && selectedTarget->type != 4) sendUnit(modSocket, modState, *selectedTarget, 3, 1);
-            else { mouseButton(display, 3, true); mouseButton(display, 3, false); }
+            if (!corpseSkill && selectedTarget && selectedTarget->type != 4) sendUnit(modSocket, modState, *selectedTarget, 3, 1);
+            else if (!corpseSkill) {
+                mouseButton(display, 3, true);
+                mouseButton(display, 3, false);
+            }
         }
         const bool effectiveAttack = attackNow && !triggerDown;
         if (menuNavigation && effectiveAttack && !attackWasDown) key(display, XK_Return, true), key(display, XK_Return, false);
         attack = effectiveAttack;
+        if (!attack) corpseCastRefreshAt = 0;
+        else if (corpseTarget && (!attackWasDown || now >= corpseCastRefreshAt)) {
+            // Cast toward a corpse without replacing the normal enemy aim/highlight.
+            sendUnit(modSocket, modState, *corpseTarget, 3, layer2 ? 1 : 0);
+            corpseCastRefreshAt = now + 400;
+        }
         const bool fallbackClickMove = fallbackMove;
         const bool directTarget = !triggerDown && !menuNavigation && !pointerMode && stateFresh && modState.commandPort > 0 && selectedTarget;
         const uint64_t selectedKey = directTarget ? (uint64_t(selectedTarget->type) << 32) | selectedTarget->id : 0;
         if (directAttackKey && (!attack || !directTarget || selectedKey != directAttackKey)) {
             releaseDirectAttack();
         }
-        const bool targetAction = attack && !layer2 && directTarget && selectedTarget->type != 4;
+        const bool targetAction = attack && !layer2 && !corpseSkill && directTarget && selectedTarget->type != 4;
         if (targetAction && !directAttackKey) {
             if (selectedTarget->type == 2 || selectedTarget->type == 5) sendUnit(modSocket, modState, *selectedTarget, 3);
             else {
@@ -914,7 +979,7 @@ void Gamepad::run() {
             sendUnit(modSocket, modState, *selectedTarget, 1);
             attackRefreshAt = now + 200;
         }
-        if (attack && !attackWasDown && !layer2 && directTarget && selectedTarget->type == 4) {
+        if (attack && !attackWasDown && !layer2 && !corpseSkill && directTarget && selectedTarget->type == 4) {
             const uint8_t payload[8] = {selectedTarget->type, 0, 0, 0,
                 static_cast<uint8_t>(selectedTarget->id), static_cast<uint8_t>(selectedTarget->id >> 8),
                 static_cast<uint8_t>(selectedTarget->id >> 16), static_cast<uint8_t>(selectedTarget->id >> 24)};

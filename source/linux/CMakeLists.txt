@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(D2ArmLinux VERSION 0.1.1 LANGUAGES CXX)
 
+set(D2_DISPLAY_VERSION "${PROJECT_VERSION}")
+if("$ENV{GITHUB_REF_NAME}" MATCHES "^v(.+)$")
+    set(D2_DISPLAY_VERSION "${CMAKE_MATCH_1}")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -20,7 +25,7 @@ qt_add_executable(d2arm-linux
     src/gamepad.h
 )
 target_link_libraries(d2arm-linux PRIVATE Qt6::Widgets PkgConfig::SDL2 X11::X11 ${XTST_LIBRARY} ${XFIXES_LIBRARY})
-target_compile_definitions(d2arm-linux PRIVATE D2_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(d2arm-linux PRIVATE D2_VERSION="${D2_DISPLAY_VERSION}")
 install(TARGETS d2arm-linux RUNTIME DESTINATION bin)
 install(FILES share/d2arm-linux.desktop DESTINATION share/applications)
 install(FILES share/d2arm-linux.svg DESTINATION share/icons/hicolor/scalable/apps)

@@ -2247,6 +2247,59 @@ static DWORD levelLayer(DWORD levelNo) {
 
 static void __cdecl automapDrawn(void);
 
+#ifndef D2_VERSION_W
+#define D2_VERSION_W L"0.1.1"
+#endif
+
+static int isGameVersionText(const wchar_t* text) {
+    if (!readable(text, 8 * sizeof(wchar_t)) || text[0] != L'v') return 0;
+    int i = 1;
+    if (text[i] < L'0' || text[i] > L'9') return 0;
+    while (i < 7 && text[i] >= L'0' && text[i] <= L'9') i++;
+    if (i >= 7) return 0;
+    if (text[i++] != L'.' || text[i] < L'0' || text[i] > L'9') return 0;
+    while (i < 7 && text[i] >= L'0' && text[i] <= L'9') i++;
+    return i < 8 && (text[i] == 0 || (text[i] >= L'a' && text[i] <= L'z'));
+}
+
+static void __fastcall projectDrawTextHook(const wchar_t* text, int x, int y, int color, int arg5) {
+    if (fDrawText) fDrawText(text, x, y, color, arg5);
+    if (fDrawText && isGameVersionText(text))
+        fDrawText(L"d2arm-linux " D2_VERSION_W, x, y + 12, color, arg5);
+}
+
+static void installProjectVersionDrawHook(void) {
+    if (!fDrawText) return;
+    BYTE* site = (BYTE*) fDrawText;
+    static const BYTE expected[] = {0x53, 0x8B, 0x5C, 0x24, 0x10};
+    if (!bytesAre((DWORD) site, expected, sizeof(expected))) {
+        logLine("project version label: DrawText hook skipped (unexpected entry bytes)");
+        return;
+    }
+    BYTE* trampoline = (BYTE*) VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!trampoline) {
+        logLine("project version label: trampoline allocation failed");
+        return;
+    }
+    memcpy(trampoline, site, sizeof(expected));
+    trampoline[5] = 0xE9;
+    *(DWORD*) (trampoline + 6) = (DWORD) (site + sizeof(expected)) - ((DWORD) trampoline + 10);
+    FlushInstructionCache(GetCurrentProcess(), trampoline, 10);
+
+    DWORD old;
+    if (!VirtualProtect(site, sizeof(expected), PAGE_EXECUTE_READWRITE, &old)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        logLine("project version label: DrawText could not be patched");
+        return;
+    }
+    site[0] = 0xE9;
+    *(DWORD*) (site + 1) = (DWORD) projectDrawTextHook - ((DWORD) site + 5);
+    VirtualProtect(site, sizeof(expected), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(expected));
+    fDrawText = (DrawText_t) trampoline;
+    logLine("project version label hook installed");
+}
+
 
 static void checkMapSites(void) {
     HMODULE win = GetModuleHandleA("D2Win.dll");
@@ -4738,6 +4791,7 @@ static void gameTick(void) {
         checkGameSoundSite();
         checkNpcMenuSites();
         checkMapSites();
+        installProjectVersionDrawHook();
         checkItemSites();
         checkTakeSites();
         checkEquipSites();

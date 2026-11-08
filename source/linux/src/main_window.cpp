@@ -100,6 +100,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     log_->setReadOnly(true);
     log_->setMaximumBlockCount(3000);
     root->addWidget(log_, 1);
+    auto *version = new QLabel(QStringLiteral("d2arm-linux %1").arg(QCoreApplication::applicationVersion()), central);
+    version->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    version->setStyleSheet(QStringLiteral("color: #888; font-size: 10px;"));
+    root->addWidget(version);
     setCentralWidget(central);
     launch_->setFocus();
 

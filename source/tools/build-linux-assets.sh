@@ -13,7 +13,7 @@ mkdir -p "$OUT_DIR/licenses/d2dx"
 D2_MOD_OUT="$OUT_DIR/mod" D2_INSTALL_OUT="$OUT_DIR/install" bash "$REPO_DIR/tools/build-mod.sh"
 
 if [ ! -s "$D2DX_ZIP" ] || ! echo "$D2DX_SHA256  $D2DX_ZIP" | sha256sum -c --status; then
-  curl --fail --location --retry 3 "$D2DX_URL" --output "$D2DX_ZIP.tmp"
+  curl --fail --location --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 20 "$D2DX_URL" --output "$D2DX_ZIP.tmp"
   echo "$D2DX_SHA256  $D2DX_ZIP.tmp" | sha256sum -c --status || { rm -f "$D2DX_ZIP.tmp"; echo "D2DX checksum mismatch" >&2; exit 1; }
   mv "$D2DX_ZIP.tmp" "$D2DX_ZIP"
 fi

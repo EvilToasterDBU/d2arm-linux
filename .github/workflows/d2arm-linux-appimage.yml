@@ -22,9 +22,9 @@ jobs:
       - name: Install AppImage tools
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage -o "$HOME/.local/bin/linuxdeploy"
-          curl -fL https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-aarch64.AppImage -o "$HOME/.local/bin/linuxdeploy-plugin-qt"
-          curl -fL https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage -o "$HOME/.local/bin/appimagetool"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 20 https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage -o "$HOME/.local/bin/linuxdeploy"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 20 https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-aarch64.AppImage -o "$HOME/.local/bin/linuxdeploy-plugin-qt"
+          curl -fL --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 20 https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage -o "$HOME/.local/bin/appimagetool"
           chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-qt" "$HOME/.local/bin/appimagetool"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build AppImage

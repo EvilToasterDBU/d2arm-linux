@@ -23,7 +23,7 @@ cmake -S "$WORK_DIR/box64-src" -B "$WORK_DIR/box64-build" -DCMAKE_BUILD_TYPE=Rel
 cmake --build "$WORK_DIR/box64-build" --parallel
 DESTDIR="$ASSET_DIR/box64" cmake --install "$WORK_DIR/box64-build"
 
-curl -fL "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VERSION}/${WINE_ARCHIVE}" \
+curl -fL --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 20 "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VERSION}/${WINE_ARCHIVE}" \
   -o "$WORK_DIR/$WINE_ARCHIVE"
 echo "$WINE_SHA256  $WORK_DIR/$WINE_ARCHIVE" | sha256sum --check --status || {
   echo "Wine archive SHA-256 mismatch" >&2

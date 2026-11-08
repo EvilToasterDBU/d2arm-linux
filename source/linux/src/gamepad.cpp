@@ -1073,7 +1073,9 @@ void Gamepad::run() {
             rtChordWasDown[i] = chordDown;
         }
         activeButtonStyle = resolveButtonStyle(controller, buttonStyle_.load());
-        const uint8_t hintMode = static_cast<uint8_t>((layer2 ? 1 : 0) | (triggerDown ? 2 : 0));
+        // Keep a context row visible whenever controller input owns the UI;
+        // the trigger bits additionally reveal PD2-style chord help.
+        const uint8_t hintMode = static_cast<uint8_t>(4 | (layer2 ? 1 : 0) | (triggerDown ? 2 : 0));
         if (modState.commandPort > 0 && (hintMode != lastHintMode || hintButtons != lastHintButtons ||
                                          activeButtonStyle != lastHintStyle)) {
             const uint8_t payload[3] = {hintMode, hintButtons, static_cast<uint8_t>(activeButtonStyle)};

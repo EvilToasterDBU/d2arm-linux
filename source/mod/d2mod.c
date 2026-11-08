@@ -2852,9 +2852,42 @@ static void drawPadCombo(const wchar_t* trigger, const wchar_t* button, int x, i
     drawPadButton(buttonKey, x + w + gap + plusW, y, w, h, scale, selected);
 }
 
+static int drawPadAction(const wchar_t* trigger, const wchar_t* button, const wchar_t* label,
+                         int x, int y, int scale, int selected) {
+    const int buttonWidth = 32 * scale, buttonHeight = 24 * scale;
+    int actionWidth = 0;
+    if (trigger) {
+        const int comboWidth = 28 * scale * 2 + 4 * scale + 9 * scale;
+        drawPadCombo(trigger, button, x, y, scale, selected);
+        actionWidth = comboWidth + 7 * scale;
+    } else {
+        const int style = InterlockedCompareExchange(&gamepadHintStyle, 0, 0);
+        const wchar_t* glyph = button;
+        if (style && button && button[0] == L'A') glyph = L"X";
+        else if (style && button && button[0] == L'B') glyph = L"O";
+        else if (style && button && button[0] == L'X') glyph = L"[]";
+        else if (style && button && button[0] == L'Y') glyph = L"^";
+        else if (style && button && button[0] == L'L') glyph = L"L1";
+        else if (style && button && button[0] == L'R') glyph = L"R1";
+        wchar_t xboxButton[8] = L"[A]";
+        if (!style && button) {
+            lstrcpynW(xboxButton, button, 7);
+            xboxButton[0] = L'[';
+            int length = lstrlenW(xboxButton);
+            if (length < 6) xboxButton[length++] = L']', xboxButton[length] = 0;
+        }
+        if (!style) glyph = xboxButton;
+        drawPadButton(glyph, x, y, buttonWidth, buttonHeight, scale, selected);
+        actionWidth = buttonWidth + 7 * scale;
+    }
+    const int labelWidth = fGetTextWidth ? fGetTextWidth(label) : 36 * scale;
+    if (fDrawText && label) fDrawText(label, x + actionWidth, y + 5 * scale, selected ? 4 : 6, 0);
+    return actionWidth + labelWidth;
+}
+
 __attribute__((force_align_arg_pointer)) void __cdecl drawGamepadHints(void) {
     LONG mode = InterlockedCompareExchange(&gamepadHintMode, 0, 0);
-    if (!mode || !fDrawText || !fSetTextSize || !client) return;
+    if (!(mode & 7) || !fDrawText || !fSetTextSize || !client) return;
     int width = (int) RD32(client, RVA_ScreenSizeX), height = (int) RD32(client, RVA_ScreenSizeY);
     if (width < 320 || height < 240) return;
     LONG buttons = InterlockedCompareExchange(&gamepadHintButtons, 0, 0);
@@ -2862,6 +2895,25 @@ __attribute__((force_align_arg_pointer)) void __cdecl drawGamepadHints(void) {
     if (scale < 1) scale = 1;
     if (scale > 4) scale = 4;
     int oldFont = fSetTextSize(1);
+    if (mode & 4) {
+        const int gap = 12 * scale;
+        const int castAction = !(mode & 1);
+        const int action = fGetTextWidth ? fGetTextWidth(L"ACT") : 24 * scale;
+        const int cast = fGetTextWidth ? fGetTextWidth(L"CAST") : 32 * scale;
+        const int hp = fGetTextWidth ? fGetTextWidth(L"HP") : 16 * scale;
+        const int mp = fGetTextWidth ? fGetTextWidth(L"MP") : 18 * scale;
+        const int singleWidth = 32 * scale + 7 * scale;
+        const int comboWidth = 28 * scale * 2 + 4 * scale + 9 * scale + 7 * scale;
+        const int total = singleWidth + action + gap + (castAction ? comboWidth + cast + gap : 0) +
+            singleWidth + hp + gap + singleWidth + mp;
+        const int x = (width - total) / 2;
+        const int y = height - 128 * scale;
+        int at = x;
+        at += drawPadAction(NULL, L"A", L"ACT", at, y, scale, (buttons & 1) != 0) + gap;
+        if (castAction) at += drawPadAction(L"LT", L"A", L"CAST", at, y, scale, (buttons & 1) != 0) + gap;
+        at += drawPadAction(NULL, L"LB", L"HP", at, y, scale, 0) + gap;
+        drawPadAction(NULL, L"RB", L"MP", at, y, scale, 0);
+    }
     if (mode & 1) {
         const int comboW = 28 * scale * 2 + 4 * scale + 9 * scale;
         const int gap = 12 * scale;
@@ -3637,7 +3689,7 @@ static void handleCommands(void* player, int stale) {
             highlightUntil = GetTickCount() + 1000;
         }
         else if (cmd == CMD_PAD_HINT && n >= 10) {
-            InterlockedExchange(&gamepadHintMode, buf[8] & 3);
+            InterlockedExchange(&gamepadHintMode, buf[8] & 7);
             InterlockedExchange(&gamepadHintButtons, buf[9] & 15);
             if (n >= 11) InterlockedExchange(&gamepadHintStyle, buf[10] & 1);
         }

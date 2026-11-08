@@ -37,6 +37,15 @@
 #define RVA_SkillTabCheck   0x30A07
 #define RVA_SkillColumnX    0x2F100
 #define RVA_SkillRowY       0x2F150
+#define SKILLFOCUS_PACKET   18
+#define SKILLFOCUS_TABLES   0xA33F0
+#define SKILLFOCUS_SKILLS   0xB98
+#define SKILLFOCUS_SKILL_COUNT 0xBA0
+#define SKILLFOCUS_DESCS    0xB8C
+#define SKILLFOCUS_DESC_COUNT 0xB94
+#define SKILLFOCUS_SKILL_STRIDE 0x23C
+#define SKILLFOCUS_DESC_STRIDE 0x120
+#define SKILLFOCUS_SKILL_DESC 0x194
 #define RVA_ScreenW         0xF7034
 #define RVA_ScreenH         0xF7038
 
@@ -402,6 +411,86 @@ static int skillTreeEdge(DWORD rva, int n) {
     DWORD a = (DWORD) n;
     __asm__ volatile ("call *%1" : "+a"(a) : "r"(client + rva) : "ecx", "edx", "memory", "cc");
     return (int) a;
+}
+
+/*
+ * Publish the actual skill-button locations for the active class and tab.
+ * SkillDesc.txt supplies each class skill's page/row/column; D2Client's own
+ * coordinate routines supply the hit-test grid for the current resolution.
+ */
+static void sendSkillFocus(void* player) {
+    static int lastOpen = -1, lastReady, lastClass = -2, lastTab = -1, lastWidth = -1, lastHeight = -1;
+    static DWORD retryAt;
+    const int open = getUiVar(4) != 0;
+    const int cls = player && readable(player, U_TXTNO + 4) ? (int) RD32(player, U_TXTNO) : -1;
+    const int tab = skillTreeKnown ? (int) RD32(client, RVA_SkillTab) : 0;
+    const int width = readable((void*) (client + RVA_ScreenSizeX), 8) ? (int) RD32(client, RVA_ScreenSizeX) : 0;
+    const int height = width ? (int) RD32(client, RVA_ScreenSizeY) : 0;
+    int sameState = open == lastOpen && cls == lastClass && tab == lastTab && width == lastWidth && height == lastHeight;
+    if (sameState && (!open || lastReady || (retryAt && (int) (GetTickCount() - retryAt) < 1000))) return;
+
+    Packet p;
+    putHeader(&p, SKILLFOCUS_PACKET);
+    putU8(&p, open);
+    putU8(&p, open && skillTreeKnown && cls >= 0 && cls < 7 && tab >= 1 && tab <= 3);
+    putU16(&p, width > 0 && width <= 0xFFFF ? width : 0);
+    putU16(&p, height > 0 && height <= 0xFFFF ? height : 0);
+    putU8(&p, cls >= 0 && cls < 7 ? cls : 0xFF);
+    putU8(&p, tab >= 1 && tab <= 3 ? tab : 0);
+
+    BYTE* tables = common && readable((void*) (common + SKILLFOCUS_TABLES), 4)
+        ? (BYTE*) RDP(common, SKILLFOCUS_TABLES) : NULL;
+    BYTE* skills = readable(tables, SKILLFOCUS_SKILL_COUNT + 4)
+        ? (BYTE*) RDP(tables, SKILLFOCUS_SKILLS) : NULL;
+    DWORD skillCount = readable(tables, SKILLFOCUS_SKILL_COUNT + 4)
+        ? RD32(tables, SKILLFOCUS_SKILL_COUNT) : 0;
+    BYTE* descriptions = readable(tables, SKILLFOCUS_DESC_COUNT + 4)
+        ? (BYTE*) RDP(tables, SKILLFOCUS_DESCS) : NULL;
+    DWORD descriptionCount = readable(tables, SKILLFOCUS_DESC_COUNT + 4)
+        ? RD32(tables, SKILLFOCUS_DESC_COUNT) : 0;
+
+    BYTE count = 0;
+    BYTE nodes[30][8];
+    memset(nodes, 0, sizeof(nodes));
+    BYTE occupied[6][3] = {{0}};
+    static const WORD firstSkill[7] = {6, 36, 66, 96, 126, 221, 251};
+    int ready = open && skillTreeKnown && cls >= 0 && cls < 7 && tab >= 1 && tab <= 3
+        && width > 0 && height > 0 && readable(skills, 4) && readable(descriptions, 4)
+        && skillCount >= (DWORD) (firstSkill[cls < 0 || cls >= 7 ? 0 : cls] + 30) && skillCount <= 4096
+        && descriptionCount > 0 && descriptionCount <= 4096;
+    if (ready) {
+        for (WORD skillId = firstSkill[cls]; skillId < firstSkill[cls] + 30 && skillId < skillCount; ++skillId) {
+            BYTE* skill = skills + (DWORD) skillId * SKILLFOCUS_SKILL_STRIDE;
+            if (!readable(skill, SKILLFOCUS_SKILL_DESC + 2)) { ready = 0; break; }
+            WORD descriptionId = RD16(skill, SKILLFOCUS_SKILL_DESC);
+            if (descriptionId >= descriptionCount) continue;
+            BYTE* description = descriptions + (DWORD) descriptionId * SKILLFOCUS_DESC_STRIDE;
+            if (!readable(description, 5)) { ready = 0; break; }
+            BYTE page = RD8(description, 2), row = RD8(description, 3), column = RD8(description, 4);
+            if (page != tab || row < 1 || row > 6 || column < 1 || column > 3 || occupied[row - 1][column - 1]) continue;
+
+            // The game hit-tests a 48x48 rectangle: [columnX,columnX+48) x
+            // (rowY-48,rowY]. Put focus at its centre.
+            int x = skillTreeEdge(RVA_SkillColumnX, column) + 24;
+            int y = skillTreeEdge(RVA_SkillRowY, row) - 24;
+            if (x < 0 || x >= width || y < 0 || y >= height || count >= 30) continue;
+            BYTE* node = nodes[count++];
+            node[0] = (BYTE) skillId; node[1] = (BYTE) (skillId >> 8);
+            node[2] = (BYTE) x; node[3] = (BYTE) (x >> 8);
+            node[4] = (BYTE) y; node[5] = (BYTE) (y >> 8);
+            node[6] = row; node[7] = column;
+            occupied[row - 1][column - 1] = 1;
+        }
+    }
+    putU8(&p, ready ? count : 0);
+    for (BYTE i = 0; i < (ready ? count : 0); ++i)
+        for (int j = 0; j < 8; ++j) putU8(&p, nodes[i][j]);
+    sendPacket(&p);
+    logLine("skill focus: %s, class %d, tab %d, %u nodes%s", open ? "open" : "closed", cls, tab,
+        ready ? count : 0, ready ? "" : " (game table unavailable)");
+    lastOpen = open; lastClass = cls; lastTab = tab; lastWidth = width; lastHeight = height;
+    lastReady = ready;
+    retryAt = open && !ready ? GetTickCount() : 0;
 }
 
 static WORD clampWord(DWORD v) {

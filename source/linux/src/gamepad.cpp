@@ -37,6 +37,14 @@ struct AimTarget {
     int y = 0;
 };
 
+struct SkillFocusPoint {
+    uint16_t skillId = 0;
+    uint8_t row = 0;
+    uint8_t column = 0;
+    float x = 0;
+    float y = 0;
+};
+
 struct ModState {
     int commandPort = 0;
     int gameWidth = 800;
@@ -53,6 +61,12 @@ struct ModState {
     std::vector<AimTarget> targets;
     uint16_t hotkeySkills[16]{};
     uint8_t hotkeyHands[16]{};
+    bool skillFocusOpen = false;
+    bool skillFocusReady = false;
+    int skillFocusClass = -1;
+    int skillFocusTab = 0;
+    uint32_t skillFocusRevision = 0;
+    std::vector<SkillFocusPoint> skillFocusPoints;
 
     bool fresh(Uint32 now) const { return stateAt && now - stateAt < 500; }
     bool panelOpen() const {
@@ -193,6 +207,53 @@ FocusPoint inventoryFocus(const ModState &state, float x, float y, int direction
     return points[next];
 }
 
+FocusPoint skillTreeFocus(const ModState &state, float x, float y, int direction = -1) {
+    if (state.skillFocusPoints.empty()) return {x, y};
+    size_t current = 0;
+    double nearest = std::numeric_limits<double>::max();
+    for (size_t n = 0; n < state.skillFocusPoints.size(); ++n) {
+        const auto &point = state.skillFocusPoints[n];
+        const double d = std::hypot(point.x - x, point.y - y);
+        if (d < nearest) nearest = d, current = n;
+    }
+    if (direction < 0) return {state.skillFocusPoints[current].x, state.skillFocusPoints[current].y};
+    const int dx[] = {0, 0, -1, 1}, dy[] = {-1, 1, 0, 0};
+    size_t next = current;
+    double best = std::numeric_limits<double>::max();
+    const auto &origin = state.skillFocusPoints[current];
+    for (size_t n = 0; n < state.skillFocusPoints.size(); ++n) {
+        const auto &point = state.skillFocusPoints[n];
+        const float xdiff = point.x - origin.x, ydiff = point.y - origin.y;
+        const double along = xdiff * dx[direction] + ydiff * dy[direction];
+        const double across = std::abs(xdiff * dy[direction] - ydiff * dx[direction]);
+        if (along <= 1 || across > along * 2.5) continue;
+        const double score = along + across * 3.0;
+        if (score < best) best = score, next = n;
+    }
+    return {state.skillFocusPoints[next].x, state.skillFocusPoints[next].y};
+}
+
+void receiveSkillFocusPacket(const uint8_t *packet, size_t length, ModState &state) {
+    if (length < 17) return;
+    state.skillFocusOpen = packet[8] != 0;
+    state.skillFocusReady = packet[9] != 0;
+    const int width = readU16(packet + 10), height = readU16(packet + 12);
+    state.skillFocusClass = packet[14] == 0xff ? -1 : packet[14];
+    state.skillFocusTab = packet[15];
+    const size_t count = packet[16];
+    state.skillFocusPoints.clear();
+    if (count > 30 || length < 17 + count * 8) state.skillFocusReady = false;
+    else if (state.skillFocusReady && width > 0 && height > 0) {
+        for (size_t i = 0; i < count; ++i) {
+            const uint8_t *node = packet + 17 + i * 8;
+            const int x = readU16(node + 2), y = readU16(node + 4);
+            if (x >= width || y >= height || node[6] < 1 || node[6] > 6 || node[7] < 1 || node[7] > 3) continue;
+            state.skillFocusPoints.push_back({readU16(node), node[6], node[7], static_cast<float>(x), static_cast<float>(y)});
+        }
+    }
+    ++state.skillFocusRevision;
+}
+
 int openModSocket() {
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return -1;
@@ -236,6 +297,8 @@ void receiveModPackets(int fd, ModState &state, Uint32 now) {
             state.hoverId = packet[35] | (uint32_t(packet[36]) << 8) | (uint32_t(packet[37]) << 16) | (uint32_t(packet[38]) << 24);
             parseAimTargets(packet.data(), static_cast<size_t>(n), state);
             state.stateAt = now;
+        } else if (packet[5] == 18) {
+            receiveSkillFocusPacket(packet.data(), static_cast<size_t>(n), state);
         }
     }
 }
@@ -410,6 +473,8 @@ void Gamepad::run() {
     bool gameCursorHidden = false;
     Uint32 cursorHudRefreshAt = 0;
     uint64_t lastPanelSignature = 0;
+    uint32_t seenSkillFocusRevision = 0;
+    bool skillTreeCursorPending = false;
     bool dpadWasDown[4] = {false, false, false, false};
     bool dpadArrowWasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
@@ -467,6 +532,7 @@ void Gamepad::run() {
                     modState.skillTreeOpen() ? modState.gameHeight * 0.48 : modState.gameHeight * 0.50;
                 cursorX = std::clamp(static_cast<float>(gameX * sx), 0.0f, static_cast<float>(displayWidth - 1));
                 cursorY = std::clamp(static_cast<float>(gameY * sy), 0.0f, static_cast<float>(displayHeight - 1));
+                if (modState.skillTreeOpen()) skillTreeCursorPending = true;
                 if (modState.uiFlags & (uint64_t{1} << 1)) {
                     const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy);
                     cursorX = focus.x * sx;
@@ -475,6 +541,20 @@ void Gamepad::run() {
                 XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
             }
             lastPanelSignature = panelSignature;
+            if (!modState.skillTreeOpen()) skillTreeCursorPending = false;
+            if (modState.skillTreeOpen() && modState.skillFocusReady &&
+                modState.skillFocusRevision != seenSkillFocusRevision) {
+                seenSkillFocusRevision = modState.skillFocusRevision;
+                if (skillTreeCursorPending && !modState.skillFocusPoints.empty()) {
+                    const double sx = static_cast<double>(DisplayWidth(display, DefaultScreen(display))) / std::max(1, modState.gameWidth);
+                    const double sy = static_cast<double>(DisplayHeight(display, DefaultScreen(display))) / std::max(1, modState.gameHeight);
+                    const auto focus = skillTreeFocus(modState, cursorX / sx, cursorY / sy);
+                    cursorX = focus.x * sx;
+                    cursorY = focus.y * sy;
+                    XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
+                    skillTreeCursorPending = false;
+                }
+            }
         }
         if (!controller && SDL_GetTicks() >= rescanAt) {
             for (int i = 0; i < SDL_NumJoysticks() && !controller; ++i) openController(i);
@@ -779,6 +859,13 @@ void Gamepad::run() {
                         const float sx = displayW / std::max(1, modState.gameWidth);
                         const float sy = displayH / std::max(1, modState.gameHeight);
                         const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy, i);
+                        cursorX = focus.x * sx;
+                        cursorY = focus.y * sy;
+                    } else if (stateFresh && modState.skillTreeOpen() && modState.skillFocusReady &&
+                               !modState.skillFocusPoints.empty()) {
+                        const float sx = displayW / std::max(1, modState.gameWidth);
+                        const float sy = displayH / std::max(1, modState.gameHeight);
+                        const auto focus = skillTreeFocus(modState, cursorX / sx, cursorY / sy, i);
                         cursorX = focus.x * sx;
                         cursorY = focus.y * sy;
                     } else {

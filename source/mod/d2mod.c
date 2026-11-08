@@ -4465,6 +4465,7 @@ static void collectAndSend(void* player) {
 
     putU8(&p, path && readable((BYTE*) path + PATH_DIR, 1) && RD8(path, PATH_DIR) < 64 ? RD8(path, PATH_DIR) : 0xFF);
     sendPacket(&p);
+    sendSkillFocus(player);
 
     void* itemUnits[MAX_ITEMS];
     for (int i = 0; i < nItems; i++) itemUnits[i] = itemList[i].unit;

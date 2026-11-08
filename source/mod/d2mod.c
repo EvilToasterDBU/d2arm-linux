@@ -344,7 +344,7 @@ static void* forcedUnit;
 
 static BYTE* selectedTrampoline;
 static DWORD highlightType, highlightId = 0xFFFFFFFF, highlightUntil;
-static volatile LONG gamepadHintMode, gamepadHintButtons;
+static volatile LONG gamepadHintMode, gamepadHintButtons, gamepadHintStyle;
 static struct {
     int active, button, shift;
     DWORD type, id, expireAt;
@@ -2835,10 +2835,18 @@ static void drawPadButton(const wchar_t* text, int x, int y, int w, int h, int s
 
 static void drawPadCombo(const wchar_t* trigger, const wchar_t* button, int x, int y, int scale, int selected) {
     const int w = 28 * scale, h = 24 * scale, gap = 4 * scale, plusW = 9 * scale;
-    wchar_t triggerKey[12] = L"[LT]";
-    wchar_t buttonKey[12] = L"[A]";
-    if (trigger && trigger[0] == L'R') triggerKey[1] = L'R';
-    if (button && button[0]) buttonKey[1] = button[0];
+    const int style = InterlockedCompareExchange(&gamepadHintStyle, 0, 0);
+    const wchar_t* triggerKey = style && trigger && trigger[0] == L'L' ? L"[L2]"
+        : style && trigger && trigger[0] == L'R' ? L"[R2]"
+        : trigger && trigger[0] == L'R' ? L"[RT]" : L"[LT]";
+    const wchar_t* buttonKey = button;
+    if (style && button && button[0] == L'A') buttonKey = L"X";
+    else if (style && button && button[0] == L'B') buttonKey = L"O";
+    else if (style && button && button[0] == L'X') buttonKey = L"[]";
+    else if (style && button && button[0] == L'Y') buttonKey = L"^";
+    wchar_t xboxButton[4] = L"[A]";
+    if (!style && button && button[0]) xboxButton[1] = button[0];
+    if (!style) buttonKey = xboxButton;
     drawPadButton(triggerKey, x, y, w, h, scale, selected);
     if (fDrawText) fDrawText(L"+", x + w + (gap / 2), y + 4 * scale, 4, 0);
     drawPadButton(buttonKey, x + w + gap + plusW, y, w, h, scale, selected);
@@ -3631,6 +3639,7 @@ static void handleCommands(void* player, int stale) {
         else if (cmd == CMD_PAD_HINT && n >= 10) {
             InterlockedExchange(&gamepadHintMode, buf[8] & 3);
             InterlockedExchange(&gamepadHintButtons, buf[9] & 15);
+            if (n >= 11) InterlockedExchange(&gamepadHintStyle, buf[10] & 1);
         }
     }
 }

@@ -11,10 +11,12 @@
 #include <array>
 #include <arpa/inet.h>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <string>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
@@ -46,6 +48,20 @@ struct SkillFocusPoint {
 };
 
 struct FocusPoint { float x, y; };
+
+int resolveButtonStyle(SDL_GameController *controller, int preference) {
+    if (preference == 1) return 0;
+    if (preference == 2) return 1;
+    const char *rawName = controller ? SDL_GameControllerName(controller) : nullptr;
+    if (!rawName) return 0;
+    std::string name(rawName);
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return name.find("playstation") != std::string::npos || name.find("dualsense") != std::string::npos ||
+           name.find("dualshock") != std::string::npos || name.find("sony") != std::string::npos ||
+           name.find("ps4") != std::string::npos || name.find("ps5") != std::string::npos ? 1 : 0;
+}
 
 struct ModState {
     int commandPort = 0;
@@ -475,11 +491,13 @@ void sendWalk(int fd, const ModState &state, int phase, float x = 0, float y = 0
 }
 
 const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
-    const double aimLength = std::hypot(x, y);
-    const bool directional = aimLength >= 0.18;
+    const double aimMagnitude = std::clamp(static_cast<double>(std::hypot(x, y)), 0.0, 1.0);
+    const bool directional = aimMagnitude >= 0.18;
+    const double maxAimDistance = std::min(state.gameWidth, state.gameHeight) * 0.72;
+    const double desiredDistance = maxAimDistance * aimMagnitude;
     if (directional) {
-        x = static_cast<float>(x / aimLength);
-        y = static_cast<float>(y / aimLength);
+        x = static_cast<float>(x / aimMagnitude);
+        y = static_cast<float>(y / aimMagnitude);
     }
     const AimTarget *best = nullptr;
     double bestScore = std::numeric_limits<double>::max();
@@ -501,9 +519,18 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         if (object && interactionDistance > (stash ? 2.0 : 1.0)) continue;
         if (target.type == 4 && interactionDistance > 1.0) continue;
         if (npc && interactionDistance > 3.0) continue;
-        const double dot = directional && distance > 1.0 ? (dx * x + dy * y) / distance : 1.0;
-        const int priority = enemy ? 0 : object ? 1 : npc ? 2 : 3;
-        const double score = priority * 1000000.0 + distance * (directional ? (1.5 - dot) : 1.0);
+        double score = 0;
+        if (directional) {
+            const double along = dx * x + dy * y;
+            const double across = std::abs(dx * y - dy * x);
+            if (along < -8 || along > maxAimDistance + 80 || across > std::max(28.0, along * 0.22)) continue;
+            score = std::abs(along - desiredDistance) + across * 2.5 + distance * 0.08;
+        } else {
+            score = distance;
+        }
+        // Keep a modest class preference for combat targets; aiming direction
+        // and stick extension determine the lock when targets are elsewhere.
+        score += enemy ? 0.0 : object ? 22.0 : npc ? 30.0 : 40.0;
         const uint64_t key = (uint64_t(target.type) << 32) | target.id;
         if (key == state.aimTargetKey) {
             previous = &target;
@@ -515,8 +542,7 @@ const AimTarget *chooseAimTarget(ModState &state, float x, float y) {
         }
     }
 
-    if (previous && static_cast<int>(previousScore / 1000000.0) == static_cast<int>(bestScore / 1000000.0) &&
-        std::fmod(previousScore, 1000000.0) <= std::fmod(bestScore, 1000000.0) * 1.15) best = previous;
+    if (previous && previousScore <= bestScore * 1.15 + 12.0) best = previous;
     state.aimTargetKey = best ? (uint64_t(best->type) << 32) | best->id : 0;
     return best;
 }
@@ -573,6 +599,30 @@ void selectBoundSkill(int fd, const ModState &state, int slot) {
         static_cast<uint8_t>(skill), static_cast<uint8_t>(skill >> 8)};
     sendModCommand(fd, state.commandPort, 13, payload, sizeof(payload));
 }
+
+void castBoundSkill(Display *display, int fd, const ModState &state, int slot,
+                    const AimTarget *target, float aimX, float aimY, float &cursorX, float &cursorY) {
+    if (slot < 0 || slot >= 16 || state.hotkeySkills[slot] == 0xffff || state.commandPort <= 0) return;
+    selectBoundSkill(fd, state, slot);
+    const int button = state.hotkeyHands[slot] == 1 ? 0 : 1;
+    if (target && target->type != 4) {
+        sendUnit(fd, state, *target, 3, button);
+        return;
+    }
+
+    const double aimLength = std::hypot(aimX, aimY);
+    if (aimLength > 1.0) aimX /= static_cast<float>(aimLength), aimY /= static_cast<float>(aimLength);
+    const double reach = std::min(state.gameWidth, state.gameHeight) * 0.72;
+    const double gameX = state.playerX + aimX * reach;
+    const double gameY = state.playerY + aimY * reach;
+    const int screenW = DisplayWidth(display, DefaultScreen(display));
+    const int screenH = DisplayHeight(display, DefaultScreen(display));
+    cursorX = std::clamp(static_cast<float>(gameX * screenW / std::max(1, state.gameWidth)), 0.0f, static_cast<float>(screenW - 1));
+    cursorY = std::clamp(static_cast<float>(gameY * screenH / std::max(1, state.gameHeight)), 0.0f, static_cast<float>(screenH - 1));
+    XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
+    mouseButton(display, button ? 3 : 1, true);
+    mouseButton(display, button ? 3 : 1, false);
+}
 }
 
 Gamepad::Gamepad(QObject *parent) : QThread(parent) {}
@@ -581,6 +631,11 @@ Gamepad::~Gamepad() { stop(); }
 void Gamepad::setEnabled(bool enabled) { enabled_.store(enabled); }
 void Gamepad::setLauncherMode(bool enabled) { launcherMode_.store(enabled); }
 void Gamepad::setRussian(bool russian) { russian_.store(russian); }
+void Gamepad::setAimAssist(bool enabled) { aimAssist_.store(enabled); }
+void Gamepad::setQuickCast(bool enabled) { quickCast_.store(enabled); }
+void Gamepad::setStickDeadzone(int percent) { stickDeadzonePercent_.store(std::clamp(percent, 5, 45)); }
+void Gamepad::setStickSensitivity(int percent) { stickSensitivityPercent_.store(std::clamp(percent, 50, 200)); }
+void Gamepad::setButtonStyle(int style) { buttonStyle_.store(std::clamp(style, 0, 2)); }
 void Gamepad::stop() {
     running_.store(false);
     if (isRunning()) wait(2000);
@@ -638,10 +693,11 @@ void Gamepad::run() {
     bool potionWasDown[2] = {false, false};
     Uint32 potionReadyAt = 0;
     bool rtChordWasDown[4] = {false, false, false, false};
-    uint8_t lastHintMode = 0xff, lastHintButtons = 0xff;
+    uint8_t lastHintMode = 0xff, lastHintButtons = 0xff, lastHintStyle = 0xff;
+    int activeButtonStyle = 0;
     auto clearGamepadHints = [&]() {
         if (modState.commandPort > 0 && (lastHintMode != 0 || lastHintButtons != 0)) {
-            const uint8_t payload[2] = {0, 0};
+            const uint8_t payload[3] = {0, 0, static_cast<uint8_t>(activeButtonStyle)};
             sendModCommand(modSocket, modState.commandPort, 27, payload, sizeof(payload));
         }
         lastHintMode = lastHintButtons = 0;
@@ -658,6 +714,12 @@ void Gamepad::run() {
     bool dpadArrowWasDown[4] = {false, false, false, false};
     float cursorX = DisplayWidth(display, DefaultScreen(display)) / 2.0f;
     float cursorY = DisplayHeight(display, DefaultScreen(display)) / 2.0f;
+    bool controllerMode = false;
+    bool controllerSampled = false;
+    Sint16 previousAxes[6]{};
+    bool previousButtons[SDL_CONTROLLER_BUTTON_MAX]{};
+    char previousKeymap[32]{};
+    int previousPointerX = -1, previousPointerY = -1;
     emit statusChanged(russian_ ? QStringLiteral("Геймпад: левый стик — движение; цель выделяется автоматически; A — действие, LT+A — навык, LT+Y — быстрый выбор навыка; RT+A/B/X/Y — инвентарь/персонаж/задания/навыки.")
                                 : QStringLiteral("Gamepad: left stick moves; nearest target is highlighted; A interacts, LT+A casts, LT+Y opens the quick skill picker; RT+A/B/X/Y open inventory/character/quests/skills."));
 
@@ -840,8 +902,8 @@ void Gamepad::run() {
 
         const Sint16 lx = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
         const Sint16 ly = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
-        auto stickAxis = [](Sint16 axis) {
-            constexpr float deadzone = 0.22f;
+        auto stickAxis = [this](Sint16 axis) {
+            const float deadzone = stickDeadzonePercent_.load() / 100.0f;
             const float value = axis / 32767.0f;
             const float magnitude = std::abs(value);
             if (magnitude <= deadzone) return 0.0f;
@@ -857,8 +919,79 @@ void Gamepad::run() {
         const Sint16 ryRaw = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY);
         const float rx = stickAxis(rxRaw);
         const float ry = stickAxis(ryRaw);
+        const Sint16 axes[6] = {lx, ly, rxRaw, ryRaw,
+            SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT),
+            SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT)};
+        bool controllerInput = false;
+        for (int i = 0; i < 6; ++i) {
+            if (controllerSampled && std::abs(static_cast<int>(axes[i]) - previousAxes[i]) > 5000) controllerInput = true;
+            previousAxes[i] = axes[i];
+        }
+        for (int i = 0; i < SDL_CONTROLLER_BUTTON_MAX; ++i) {
+            const bool down = SDL_GameControllerGetButton(controller, static_cast<SDL_GameControllerButton>(i));
+            if (down && (!controllerSampled || !previousButtons[i])) controllerInput = true;
+            previousButtons[i] = down;
+        }
+        char keymap[32]{};
+        XQueryKeymap(display, keymap);
+        bool keyboardInput = false;
+        for (int code = 8; code < 256; ++code) {
+            const unsigned mask = 1u << (code & 7);
+            if ((static_cast<unsigned char>(keymap[code >> 3]) & mask) &&
+                !(static_cast<unsigned char>(previousKeymap[code >> 3]) & mask)) {
+                keyboardInput = true;
+                break;
+            }
+        }
+        std::memcpy(previousKeymap, keymap, sizeof(previousKeymap));
+        Window rootWindow = DefaultRootWindow(display), childWindow = 0;
+        int rootX = 0, rootY = 0, windowX = 0, windowY = 0;
+        unsigned pointerMask = 0;
+        if (XQueryPointer(display, rootWindow, &rootWindow, &childWindow, &rootX, &rootY,
+                          &windowX, &windowY, &pointerMask)) {
+            const bool moved = previousPointerX >= 0 &&
+                (std::abs(rootX - previousPointerX) > 2 || std::abs(rootY - previousPointerY) > 2);
+            const bool matchesPadCursor = std::abs(rootX - static_cast<int>(cursorX)) <= 2 &&
+                                          std::abs(rootY - static_cast<int>(cursorY)) <= 2;
+            if (moved && !matchesPadCursor) keyboardInput = true;
+            previousPointerX = rootX;
+            previousPointerY = rootY;
+        }
+        controllerSampled = true;
+        if (controllerInput) controllerMode = true;
+        if (keyboardInput) controllerMode = false;
+        if (!controllerMode) {
+            clearGamepadHints();
+            releaseDirectAttack();
+            if (highlightedKey) sendHighlight(modSocket, modState, nullptr), highlightedKey = 0;
+            if (directWalking) sendWalk(modSocket, modState, 2), directWalking = false;
+            if (leftHeld) mouseButton(display, 1, false), leftHeld = false;
+            if (rightHeld) mouseButton(display, 3, false), rightHeld = false;
+            if (showItemsWasDown) key(display, XK_Alt_L, false), showItemsWasDown = false;
+            const KeySym arrows[4] = {XK_Up, XK_Down, XK_Left, XK_Right};
+            for (int i = 0; i < 4; ++i) {
+                if (dpadWasDown[i] && dpadArrowWasDown[i]) key(display, arrows[i], false);
+                dpadWasDown[i] = dpadArrowWasDown[i] = false;
+            }
+            attack = menuWasDown = inventoryWasDown = false;
+            for (bool &wasDown : skillWasDown) wasDown = false;
+            for (bool &wasDown : potionWasDown) wasDown = false;
+            for (bool &wasDown : rtChordWasDown) wasDown = false;
+            if (pointerHidden) XFixesShowCursor(display, DefaultRootWindow(display)), pointerHidden = false;
+            if (gameCursorHidden && modState.commandPort > 0) {
+                const uint8_t hud[3] = {0, 0, 0};
+                sendModCommand(modSocket, modState.commandPort, 5, hud, sizeof(hud));
+                gameCursorHidden = false;
+            }
+            XFlush(display);
+            QThread::msleep(16);
+            continue;
+        }
         const bool stateFresh = modState.fresh(now);
-        const bool pointerMode = modSocket >= 0 && (!stateFresh || modState.panelOpen());
+        // Quick Cast changes when a skill is triggered, not how the stick aims.
+        // Disabling aim assist alone restores the visible, manually controlled pointer.
+        const bool manualAim = stateFresh && !modState.panelOpen() && !aimAssist_.load();
+        const bool pointerMode = modSocket >= 0 && (!stateFresh || modState.panelOpen() || manualAim);
         const bool menuNavigation = modSocket >= 0 && ((!stateFresh && modState.uiFocusPoints.empty()) ||
             modState.escMenu() || modState.npcMenu());
         const bool directMove = modSocket >= 0 && stateFresh && modState.commandPort > 0 && modState.canWalk &&
@@ -895,8 +1028,8 @@ void Gamepad::run() {
             highlightedKey = 0;
         }
         if (pointerMode) {
-            cursorMoveX = x + rx;
-            cursorMoveY = y + ry;
+            cursorMoveX = manualAim ? rx : x + rx;
+            cursorMoveY = manualAim ? ry : y + ry;
         } else {
             cursorMoveX = cursorMoveY = 0;
         }
@@ -913,8 +1046,9 @@ void Gamepad::run() {
             cursorHudRefreshAt = now + 1000;
         }
         if (cursorMoveX != 0 || cursorMoveY != 0) {
-            cursorX += cursorMoveX * 8.0f;
-            cursorY += cursorMoveY * 8.0f;
+            const float sensitivity = stickSensitivityPercent_.load() / 100.0f;
+            cursorX += cursorMoveX * 8.0f * sensitivity;
+            cursorY += cursorMoveY * 8.0f * sensitivity;
             cursorX = std::clamp(cursorX, 0.0f, static_cast<float>(DisplayWidth(display, DefaultScreen(display)) - 1));
             cursorY = std::clamp(cursorY, 0.0f, static_cast<float>(DisplayHeight(display, DefaultScreen(display)) - 1));
             XTestFakeMotionEvent(display, DefaultScreen(display), static_cast<int>(cursorX), static_cast<int>(cursorY), CurrentTime);
@@ -938,12 +1072,15 @@ void Gamepad::run() {
             if (chordDown && !rtChordWasDown[i]) key(display, rtKeys[i], true), key(display, rtKeys[i], false);
             rtChordWasDown[i] = chordDown;
         }
+        activeButtonStyle = resolveButtonStyle(controller, buttonStyle_.load());
         const uint8_t hintMode = static_cast<uint8_t>((layer2 ? 1 : 0) | (triggerDown ? 2 : 0));
-        if (modState.commandPort > 0 && (hintMode != lastHintMode || hintButtons != lastHintButtons)) {
-            const uint8_t payload[2] = {hintMode, hintButtons};
+        if (modState.commandPort > 0 && (hintMode != lastHintMode || hintButtons != lastHintButtons ||
+                                         activeButtonStyle != lastHintStyle)) {
+            const uint8_t payload[3] = {hintMode, hintButtons, static_cast<uint8_t>(activeButtonStyle)};
             sendModCommand(modSocket, modState.commandPort, 27, payload, sizeof(payload));
             lastHintMode = hintMode;
             lastHintButtons = hintButtons;
+            lastHintStyle = static_cast<uint8_t>(activeButtonStyle);
         }
         if (attackNow && !attackWasDown && layer2 && !triggerDown && !pointerMode && stateFresh && modState.commandPort > 0) {
             if (!corpseSkill && selectedTarget && selectedTarget->type != 4) sendUnit(modSocket, modState, *selectedTarget, 3, 1);
@@ -951,6 +1088,10 @@ void Gamepad::run() {
                 mouseButton(display, 3, true);
                 mouseButton(display, 3, false);
             }
+        }
+        if (attackNow && !attackWasDown && layer2 && !triggerDown && manualAim) {
+            mouseButton(display, 3, true);
+            mouseButton(display, 3, false);
         }
         const bool effectiveAttack = attackNow && !triggerDown;
         if (menuNavigation && effectiveAttack && !attackWasDown) key(display, XK_Return, true), key(display, XK_Return, false);
@@ -1031,13 +1172,26 @@ void Gamepad::run() {
                     key(display, XK_s, true);
                     key(display, XK_s, false);
                 } else if (layer2 && i < 3 && stateFresh && modState.commandPort > 0 && modState.hotkeySkills[i + 4] != 0xffff) {
-                    selectBoundSkill(modSocket, modState, i + 4);
+                    if (quickCast_.load())
+                        castBoundSkill(display, modSocket, modState, i + 4, selectedTarget, rx, ry, cursorX, cursorY);
+                    else
+                        selectBoundSkill(modSocket, modState, i + 4);
                 } else if (i == 3 && layer2) {
                     const uint8_t portal = 0;
                     sendModCommand(modSocket, modState.commandPort, 7, &portal, 1);
                 } else {
+                    const int slot = layer2 ? i + 4 : i;
                     const KeySym sym = layer2 ? secondRow[i] : firstRow[i];
-                    if (sym != NoSymbol) key(display, sym, true), key(display, sym, false);
+                    if (stateFresh && modState.commandPort > 0 && slot < 16 &&
+                        modState.hotkeySkills[slot] != 0xffff) {
+                        if (quickCast_.load())
+                            castBoundSkill(display, modSocket, modState, slot, selectedTarget, rx, ry, cursorX, cursorY);
+                        else
+                            selectBoundSkill(modSocket, modState, slot);
+                    } else if (sym != NoSymbol) {
+                        key(display, sym, true);
+                        key(display, sym, false);
+                    }
                 }
             }
             if (!down && skillWasDown[i] && i == 0 && rightHeld) {

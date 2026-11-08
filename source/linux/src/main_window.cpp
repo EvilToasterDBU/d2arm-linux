@@ -20,6 +20,8 @@
 #include <QStandardPaths>
 #include <QSettings>
 #include <QLocale>
+#include <QSlider>
+#include <QGroupBox>
 #include <QProcessEnvironment>
 #include <QKeyEvent>
 #include <QGuiApplication>
@@ -33,7 +35,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     russian_ = QLocale::system().language() == QLocale::Russian;
     gamepad_.setRussian(russian_);
     setWindowTitle(trText("D2ARM Linux", "D2ARM Linux"));
-    setMinimumSize(720, 500);
+    setMinimumSize(720, 610);
 
     auto *central = new QWidget(this);
     auto *root = new QVBoxLayout(central);
@@ -81,9 +83,53 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     featureNote->setWordWrap(true);
     root->addWidget(featureNote);
 
-    gamepadEnabled_ = new QCheckBox(trText("Enable gamepad controls", "Включить управление геймпадом"), central);
+    auto *padBox = new QGroupBox(trText("Controller", "Геймпад"), central);
+    auto *padForm = new QFormLayout(padBox);
+    gamepadEnabled_ = new QCheckBox(trText("Enable gamepad controls", "Включить управление геймпадом"), padBox);
     gamepadEnabled_->setChecked(true);
-    root->addWidget(gamepadEnabled_);
+    padForm->addRow(gamepadEnabled_);
+
+    aimAssist_ = new QCheckBox(trText("Aim assist", "Помощь при прицеливании"), padBox);
+    aimAssist_->setChecked(true);
+    aimAssist_->setToolTip(trText("Lock onto visible units with the right stick. Turn off to aim with a visible pointer.",
+                                   "Правый стик выбирает видимые цели. Отключите, чтобы целиться видимым курсором."));
+    padForm->addRow(aimAssist_);
+    quickCast_ = new QCheckBox(trText("Quick Cast", "Быстрый каст"), padBox);
+    quickCast_->setChecked(true);
+    quickCast_->setToolTip(trText("Cast as soon as a bound skill button is pressed. Turn off to select the skill first, then cast with its normal action button.",
+                                  "Сразу применять навык при нажатии назначенной кнопки. Отключите, чтобы сначала выбрать навык, а затем применить его обычной кнопкой действия."));
+    padForm->addRow(quickCast_);
+
+    auto makeSliderRow = [this, padBox, padForm](const QString &label, int minimum, int maximum,
+                                                  int initial, const QString &suffix) {
+        auto *row = new QWidget(padBox);
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        auto *slider = new QSlider(Qt::Horizontal, row);
+        slider->setRange(minimum, maximum);
+        slider->setValue(initial);
+        auto *value = new QLabel(QStringLiteral("%1%2").arg(initial).arg(suffix), row);
+        value->setMinimumWidth(48);
+        connect(slider, &QSlider::valueChanged, row, [value, suffix](int current) {
+            value->setText(QStringLiteral("%1%2").arg(current).arg(suffix));
+        });
+        layout->addWidget(slider, 1);
+        layout->addWidget(value);
+        padForm->addRow(label, row);
+        return slider;
+    };
+    stickDeadzone_ = makeSliderRow(trText("Stick deadzone", "Мёртвая зона стика"), 5, 45, 22, "%");
+    stickDeadzone_->setToolTip(trText("Ignore stick movement below this threshold.",
+                                     "Игнорировать отклонение стика меньше этого значения."));
+    stickSensitivity_ = makeSliderRow(trText("Pointer sensitivity", "Чувствительность курсора"), 50, 200, 100, "%");
+    stickSensitivity_->setToolTip(trText("Changes pointer speed while navigating game menus.",
+                                         "Меняет скорость курсора при навигации по меню игры."));
+    buttonStyle_ = new QComboBox(padBox);
+    buttonStyle_->addItem(trText("Detect automatically", "Определять автоматически"), 0);
+    buttonStyle_->addItem(QStringLiteral("Xbox"), 1);
+    buttonStyle_->addItem(QStringLiteral("PlayStation"), 2);
+    padForm->addRow(trText("Button prompts", "Значки кнопок"), buttonStyle_);
+    root->addWidget(padBox);
 
     auto *buttons = new QHBoxLayout();
     launch_ = new QPushButton(trText("Launch game", "Запустить игру"), central);
@@ -114,6 +160,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(&process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &MainWindow::processFinished);
     connect(&gamepad_, &Gamepad::statusChanged, this, &MainWindow::onGamepadStatus);
     connect(&gamepad_, &Gamepad::launcherAction, this, &MainWindow::onLauncherAction);
+    connect(aimAssist_, &QCheckBox::toggled, &gamepad_, &Gamepad::setAimAssist);
+    connect(quickCast_, &QCheckBox::toggled, &gamepad_, &Gamepad::setQuickCast);
+    connect(stickDeadzone_, &QSlider::valueChanged, &gamepad_, &Gamepad::setStickDeadzone);
+    connect(stickSensitivity_, &QSlider::valueChanged, &gamepad_, &Gamepad::setStickSensitivity);
+    connect(buttonStyle_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        gamepad_.setButtonStyle(buttonStyle_->itemData(index).toInt());
+    });
 
     restoreSettings();
     applyStyle();
@@ -143,6 +196,17 @@ void MainWindow::restoreSettings() {
                          ? configuredWine
                          : (QFileInfo(bundledWine).isExecutable() ? bundledWine : QStandardPaths::findExecutable("wine")));
     gamepadEnabled_->setChecked(s.value("gamepadEnabled", true).toBool());
+    aimAssist_->setChecked(s.value("gamepadAimAssist", true).toBool());
+    quickCast_->setChecked(s.value("gamepadQuickCast", true).toBool());
+    stickDeadzone_->setValue(s.value("gamepadDeadzone", 22).toInt());
+    stickSensitivity_->setValue(s.value("gamepadSensitivity", 100).toInt());
+    const int buttonStyle = buttonStyle_->findData(s.value("gamepadButtonStyle", 0).toInt());
+    buttonStyle_->setCurrentIndex(buttonStyle >= 0 ? buttonStyle : 0);
+    gamepad_.setAimAssist(aimAssist_->isChecked());
+    gamepad_.setQuickCast(quickCast_->isChecked());
+    gamepad_.setStickDeadzone(stickDeadzone_->value());
+    gamepad_.setStickSensitivity(stickSensitivity_->value());
+    gamepad_.setButtonStyle(buttonStyle_->currentData().toInt());
     const int interfaceHeight = s.value("interfaceHeight", 0).toInt();
     const int scaleIndex = interfaceScale_->findData(interfaceHeight);
     interfaceScale_->setCurrentIndex(scaleIndex >= 0 ? scaleIndex : 0);
@@ -154,6 +218,11 @@ void MainWindow::saveSettings() const {
     s.setValue("box64", box64_->text());
     s.setValue("wine64", wine64_->text());
     s.setValue("gamepadEnabled", gamepadEnabled_->isChecked());
+    s.setValue("gamepadAimAssist", aimAssist_->isChecked());
+    s.setValue("gamepadQuickCast", quickCast_->isChecked());
+    s.setValue("gamepadDeadzone", stickDeadzone_->value());
+    s.setValue("gamepadSensitivity", stickSensitivity_->value());
+    s.setValue("gamepadButtonStyle", buttonStyle_->currentData().toInt());
     s.setValue("interfaceHeight", interfaceScale_->currentData().toInt());
 }
 

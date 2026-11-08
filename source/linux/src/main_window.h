@@ -11,6 +11,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QCheckBox;
 class QComboBox;
+class QSlider;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -45,6 +46,11 @@ private:
     QLineEdit *box64_ = nullptr;
     QLineEdit *wine64_ = nullptr;
     QCheckBox *gamepadEnabled_ = nullptr;
+    QCheckBox *aimAssist_ = nullptr;
+    QCheckBox *quickCast_ = nullptr;
+    QSlider *stickDeadzone_ = nullptr;
+    QSlider *stickSensitivity_ = nullptr;
+    QComboBox *buttonStyle_ = nullptr;
     QComboBox *interfaceScale_ = nullptr;
     QLabel *status_ = nullptr;
     QPushButton *launch_ = nullptr;

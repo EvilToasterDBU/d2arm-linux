@@ -11,7 +11,7 @@ if [ "$ARCH" != aarch64 ] && [ "$ARCH" != arm64 ]; then
   exit 1
 fi
 
-for tool in cmake ninja pkg-config linuxdeploy linuxdeploy-plugin-qt appimagetool rsvg-convert; do
+for tool in cmake ninja pkg-config linuxdeploy linuxdeploy-plugin-qt rsvg-convert; do
   command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done
 

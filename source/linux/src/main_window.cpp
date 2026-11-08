@@ -279,6 +279,17 @@ QString MainWindow::prepareGameShadow(const QString &sourceDirectory) {
         if (QFileInfo::exists(to) && !QFile::remove(to)) throw std::runtime_error("cannot replace a game shadow file");
         if (!QFile::copy(from, to)) throw std::runtime_error(QString("cannot copy: %1").arg(relative).toStdString());
     }
+    const QString pd2Icons = QDir(appDataDirectory()).filePath("pd2-controller-assets");
+    const QString controls = QDir(base).filePath("data/global/ui/controls");
+    const QStringList controllerSprites = {"Controls_Xbox_20.dc6", "Controls_Dualshock_20.dc6"};
+    for (const QString &name : controllerSprites) {
+        const QString from = QDir(pd2Icons).filePath(name);
+        if (!QFileInfo(from).isFile()) continue;
+        if (!QDir().mkpath(controls)) throw std::runtime_error("cannot create the gamepad sprite directory");
+        const QString to = QDir(controls).filePath(name);
+        if (QFileInfo::exists(to) && !QFile::remove(to)) throw std::runtime_error("cannot replace a PD2 controller sprite");
+        if (!QFile::copy(from, to)) throw std::runtime_error(QString("cannot install PD2 controller sprite: %1").arg(name).toStdString());
+    }
     const int targetHeight = interfaceScale_->currentData().toInt();
     if (targetHeight > 0) {
         QFile config(QDir(base).filePath("d2dx.cfg"));

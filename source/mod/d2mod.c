@@ -185,6 +185,8 @@
 #define ORD_GetLevelDef         10087
 #define ORD_GetObjectTxt        10319
 #define ORD_DrawText            10076
+#define ORD_LoadCellFile        10111
+#define ORD_DrawCelContext      10041
 #define ORD_GetTextWidth        10150
 #define ORD_SetTextSize         10047
 #define ORD_GetUnitStat         10550
@@ -2144,6 +2146,8 @@ typedef void (__fastcall *AddCell_t)(void*, void*);
 typedef void (__fastcall *DrawText_t)(const wchar_t*, int, int, int, int);
 typedef int (__fastcall *TextWidth_t)(const wchar_t*);
 typedef int (__fastcall *SetTextSize_t)(int);
+typedef void* (__fastcall *LoadCellFile_t)(const char*, DWORD);
+typedef void (__stdcall *DrawCelContext_t)(void*, int, int, DWORD, int, BYTE*);
 static GetLevel_t fGetLevel;
 static InitLevel_t fInitLevel;
 static RoomData_t fAddRoomData, fRemoveRoomData;
@@ -2156,6 +2160,10 @@ static AddCell_t fAddAutomapCell;
 static DrawText_t fDrawText;
 static TextWidth_t fGetTextWidth;
 static SetTextSize_t fSetTextSize;
+static LoadCellFile_t fLoadCellFile;
+static DrawCelContext_t fDrawCelContext;
+static void* gamepadButtonCells[2];
+static int gamepadButtonCellsAttempted;
 
 static DWORD* objectTxtCount;
 static int mapAvailable, mapShown;
@@ -2827,8 +2835,54 @@ __attribute__((force_align_arg_pointer)) static void __cdecl automapDrawn(void) 
     if (mapShown) drawLabels();
 }
 
+static int padGlyphIndex(const wchar_t* text) {
+    if (!text) return -1;
+    if (wcscmp(text, L"A") == 0 || wcscmp(text, L"[A]") == 0 || wcscmp(text, L"X") == 0) return 0;
+    if (wcscmp(text, L"B") == 0 || wcscmp(text, L"[B]") == 0 || wcscmp(text, L"O") == 0) return 1;
+    if (wcscmp(text, L"Y") == 0 || wcscmp(text, L"[Y]") == 0 || wcscmp(text, L"^") == 0) return 2;
+    if (wcscmp(text, L"X") == 0 || wcscmp(text, L"[X]") == 0 || wcscmp(text, L"[]") == 0) return 3;
+    if (wcscmp(text, L"LB") == 0 || wcscmp(text, L"L1") == 0 || wcscmp(text, L"[L1]") == 0) return 8;
+    if (wcscmp(text, L"RB") == 0 || wcscmp(text, L"R1") == 0 || wcscmp(text, L"[R1]") == 0) return 9;
+    if (wcscmp(text, L"LT") == 0 || wcscmp(text, L"[LT]") == 0 || wcscmp(text, L"[L2]") == 0) return 12;
+    if (wcscmp(text, L"RT") == 0 || wcscmp(text, L"[RT]") == 0 || wcscmp(text, L"[R2]") == 0) return 13;
+    return -1;
+}
+
+static void ensurePadButtonCells(void) {
+    if (!client) return;
+    if (!fLoadCellFile) {
+        HMODULE win = GetModuleHandleA("D2Win.dll");
+        fLoadCellFile = win ? (LoadCellFile_t) GetProcAddress(win, (LPCSTR) ORD_LoadCellFile) : NULL;
+    }
+    if (!fDrawCelContext) {
+        HMODULE gfx = GetModuleHandleA("D2Gfx.dll");
+        fDrawCelContext = gfx ? (DrawCelContext_t) GetProcAddress(gfx, (LPCSTR) ORD_DrawCelContext) : NULL;
+    }
+    if (!fLoadCellFile || !fDrawCelContext || gamepadButtonCellsAttempted) return;
+    gamepadButtonCellsAttempted = 1;
+    if (!gamepadButtonCells[0])
+        gamepadButtonCells[0] = fLoadCellFile("data\\global\\ui\\controls\\Controls_Xbox_20.dc6", 0);
+    if (!gamepadButtonCells[1])
+        gamepadButtonCells[1] = fLoadCellFile("data\\global\\ui\\controls\\Controls_Dualshock_20.dc6", 0);
+}
+
 static void drawPadButton(const wchar_t* text, int x, int y, int w, int h, int scale, int selected) {
-    if (!fDrawText || !text) return;
+    if (!text) return;
+    ensurePadButtonCells();
+    const int style = InterlockedCompareExchange(&gamepadHintStyle, 0, 0) ? 1 : 0;
+    const int frame = padGlyphIndex(text);
+    void* cell = gamepadButtonCells[style];
+    if (cell && frame >= 0 && fDrawCelContext) {
+        BYTE context[0x48] = {0};
+        *(DWORD*) (context + 0x00) = (DWORD) frame;
+        *(void**) (context + 0x34) = cell;
+        *(DWORD*) (context + 0x40) = 0;
+        const int iconW = 28 * scale, iconH = 20 * scale;
+        fDrawCelContext(context, x + (w - iconW) / 2, y + (h - iconH) / 2,
+                        0xFFFFFFFF, 0, NULL);
+        return;
+    }
+    if (!fDrawText) return;
     const int width = fGetTextWidth ? fGetTextWidth(text) : (int) w / 2;
     fDrawText(text, x + (w - width) / 2, y + (h - 14 * scale) / 2, selected ? 4 : 6, 0);
 }

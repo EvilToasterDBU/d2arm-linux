@@ -59,5 +59,5 @@ linuxdeploy --appdir "$APPDIR" \
   --desktop-file "$ROOT/share/d2arm-linux.desktop" \
   --icon-file "$ROOT/share/d2arm-linux.svg" \
   --plugin qt
-APPIMAGE_EXTRACT_AND_RUN=1 appimagetool --no-appstream --runtime-file "$RUNTIME_FILE" "$APPDIR" "$LDAI_OUTPUT"
+ARCH=aarch64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool --no-appstream --runtime-file "$RUNTIME_FILE" "$APPDIR" "$LDAI_OUTPUT"
 echo "Built $ROOT/dist/d2arm-linux-aarch64.AppImage"

@@ -279,6 +279,7 @@ static const BYTE GAMELOOP_ORIGINAL[7] = {0x83, 0xEC, 0x20, 0x89, 0x4C, 0x24, 0x
 #define PKT_GOALS 3
 #define PKT_MENU 5
 #define PKT_EFFECTS 6
+#define PKT_UI_FOCUS 19
 #define CMD_DRINK 1
 #define CMD_UNIT 2
 #define PHASE_DOWN 0
@@ -5150,10 +5151,64 @@ static void sendStatus(void) {
 #define CONTROL_EDITFLAGS 0x260
 #define MENU_TEXT_MAX 48
 
+#define RVA_WinFirstControl 0x8DB34
+#define UI_CONTROL_FLAGS 0x08
+#define UI_CONTROL_ENABLED 0x01
+#define UI_CONTROL_PRESS 0x34
+#define UI_CONTROL_NEXT 0x3C
+#define UI_FOCUS_MAX 48
+
 #include "d2menu.h"
 
 static int menuFieldSent[5] = {-1};
 static char menuTextSent[MENU_TEXT_MAX + 1];
+
+static void sendUiControlFocus(void) {
+    static WORD lastPoints[UI_FOCUS_MAX][2];
+    static int lastCount = -1;
+    DWORD win = (DWORD) GetModuleHandleA("D2Win.dll");
+    DWORD* first = win && readable((void*) (win + RVA_WinFirstControl), 4)
+        ? (DWORD*) (win + RVA_WinFirstControl) : NULL;
+    DWORD* control = first ? (DWORD*) *first : NULL;
+    const int screenWidth = client && readable((void*) (client + RVA_ScreenSizeX), 8)
+        ? (int) RD32(client, RVA_ScreenSizeX) : 800;
+    const int screenHeight = client && readable((void*) (client + RVA_ScreenSizeY), 4)
+        ? (int) RD32(client, RVA_ScreenSizeY) : 600;
+    WORD points[UI_FOCUS_MAX][2];
+    int count = 0;
+    for (int guard = 0; control && guard < 256 && count < UI_FOCUS_MAX; ++guard) {
+        if (!readable(control, UI_CONTROL_NEXT + 4)) break;
+        DWORD* next = (DWORD*) control[UI_CONTROL_NEXT / 4];
+        if (readable(control, UI_CONTROL_PRESS + 4)
+            && (control[UI_CONTROL_FLAGS / 4] & UI_CONTROL_ENABLED)
+            && control[UI_CONTROL_PRESS / 4]) {
+            const int x = (int) control[3];
+            const int bottom = (int) control[4];
+            const int width = (int) control[5];
+            const int height = (int) control[6];
+            if (x >= 0 && x + width <= screenWidth && bottom >= height && bottom <= screenHeight
+                && width > 0 && height > 0) {
+                points[count][0] = (WORD) (x + width / 2);
+                points[count][1] = (WORD) (bottom - height / 2);
+                ++count;
+            }
+        }
+        control = next;
+    }
+    if (count == lastCount && count >= 0 && memcmp(points, lastPoints, (size_t) count * sizeof(points[0])) == 0) return;
+
+    Packet p;
+    putHeader(&p, PKT_UI_FOCUS);
+    putU8(&p, count);
+    for (int i = 0; i < count; ++i) {
+        putU16(&p, points[i][0]);
+        putU16(&p, points[i][1]);
+    }
+    sendPacket(&p);
+    if (count) memcpy(lastPoints, points, (size_t) count * sizeof(points[0]));
+    lastCount = count;
+    logLine("UI focus: %d active game controls", count);
+}
 
 static void checkMenuField(int force) {
     static DWORD win;
@@ -5182,6 +5237,7 @@ static void checkMenuField(int force) {
             }
         }
     }
+    sendUiControlFocus();
     if (!force && memcmp(field, menuFieldSent, sizeof(field)) == 0 && strcmp(text, menuTextSent) == 0) return;
     memcpy(menuFieldSent, field, sizeof(field));
     lstrcpynA(menuTextSent, text, sizeof(menuTextSent));

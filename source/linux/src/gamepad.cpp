@@ -178,7 +178,17 @@ std::vector<FocusPoint> inventoryFocusPoints(const ModState &state) {
     const uint64_t flags = state.uiFlags;
     const auto open = [flags](unsigned index) { return (flags & (uint64_t{1} << index)) != 0; };
 
-    if (open(1)) {
+    // The reference captures are 1920x1080. Convert their measured control
+    // centers into the game's current client coordinates so the maps remain
+    // aligned at other resolutions and aspect ratios.
+    const auto addRef = [&add, &state](float x, float y) {
+        add(x * state.gameWidth / 1920.0f, y * state.gameHeight / 1080.0f);
+    };
+
+    const bool leftPanelOpen = open(25) || open(26) || open(12) || open(23) || open(2) ||
+        open(4) || open(15) || open(17) || open(20);
+
+    if (open(1) || leftPanelOpen) {
         // Keep the established player inventory and equipment focus map unchanged.
         const FocusPoint controls[] = {
             {32,35}, {65,35}, {263,35}, {295,35},
@@ -190,59 +200,66 @@ std::vector<FocusPoint> inventoryFocusPoints(const ModState &state) {
         for (int row = 0; row < 4; ++row)
             for (int col = 0; col < 10; ++col)
                 add(left + 31.0f + col * 29, top + 269.5f + row * 29);
-        // The belt is part of the in-game HUD, but remains reachable while the inventory is open.
-        for (int slot = 0; slot < 4; ++slot)
-            add(left + 50.0f + slot * 31.0f, state.gameHeight - 20.0f);
+        // The belt is still visible alongside the left-side panels in the
+        // reference captures. Keep its points separate from the protected
+        // player-inventory grid above.
+        if (!open(1)) {
+            constexpr float beltX[] = {1037, 1098, 1158, 1218};
+            for (float x : beltX) addRef(x, 1040);
+        }
     }
 
-    if (open(25)) {
-        // Stash grid: six columns by eight rows, using the game's left panel.
+    if (open(25) || open(26)) {
+        constexpr float firstX = 493, firstY = 249, cell = 59.3f;
         for (int row = 0; row < 8; ++row)
             for (int col = 0; col < 6; ++col)
-                add(left - 248.0f + col * 31.0f, top + 78.0f + row * 32.5f);
-        add(left - 252.0f, top + 12.0f); // stash gold control
-        add(left - 34.0f, top + 403.0f); // close stash
+                addRef(firstX + col * cell, firstY + row * cell);
+        addRef(490, 126); // stash gold control
+        addRef(897, 864); // close stash
     }
 
     if (open(12) || open(23)) {
-        const float tabX[] = {left - 305, left - 213, left - 128, left - 41};
-        for (float x : tabX) add(x, top + 17); // shop tabs
+        constexpr float tabX[] = {400, 555, 719, 882};
+        for (float x : tabX) addRef(x, 89); // shop tabs
         for (int row = 0; row < 8; ++row)
             for (int col = 0; col < 8; ++col)
-                add(left - 307.0f + col * 39.0f, top + 60.0f + row * 41.0f);
-        for (int i = 0; i < 4; ++i) add(left - 202.0f + i * 55.0f, top + 423.0f);
+                addRef(385 + col * 74.5f, 220 + row * 73.5f);
+        constexpr float actionX[] = {582, 685, 790, 895};
+        for (float x : actionX) addRef(x, 862);
     }
 
     if (open(2)) {
-        const float statY[] = {top + 76, top + 146, top + 228, top + 312};
-        for (float y : statY) add(left - 193.0f, y); // four attribute allocation buttons
-        add(left - 187.0f, top + 423.0f); // close character sheet
+        constexpr float statY[] = {245, 369, 519, 669};
+        for (float y : statY) addRef(598, y); // four attribute allocation buttons
+        addRef(610, 870); // close character sheet
     }
 
     if (open(4)) {
         // Skill icons come from SkillDesc and the game's own column/row hit-test API.
         const auto tree = state.skillFocusPoints;
         for (const auto &point : tree) add(point.x, point.y);
-        // The three class-tree tabs occupy the right edge of the skill panel.
-        for (int tab = 0; tab < 3; ++tab)
-            add(left + 295.0f, top + 151.0f + tab * 120.0f);
+        // Skill nodes come from the game's own skill descriptor API; only the
+        // three class tabs need a measured fallback map.
+        constexpr float tabY[] = {381, 601, 813};
+        for (float y : tabY) addRef(1508, y);
     }
 
     if (open(15) || open(17)) {
-        const float tabX[] = {left - 302, left - 235, left - 165, left - 97, left - 30};
-        for (float x : tabX) add(x, top + 18.0f);
+        constexpr float tabX[] = {395, 519, 643, 767, 891};
+        for (float x : tabX) addRef(x, 89);
         for (int row = 0; row < 2; ++row)
             for (int col = 0; col < 3; ++col)
-                add(left - 277.0f + col * 96.0f, top + 78.0f + row * 102.0f);
-        add(left - 85.0f, top + 423.0f);
-        add(left - 28.0f, top + 423.0f);
+                addRef(442 + col * 180, 237 + row * 190);
+        addRef(802, 874);
+        addRef(909, 874);
     }
 
     if (open(20)) {
-        const float tabX[] = {left - 302, left - 235, left - 165, left - 97, left - 30};
-        for (float x : tabX) add(x, top + 18.0f);
-        for (int row = 0; row < 9; ++row) add(left - 177.0f, top + 78.0f + row * 39.0f);
-        add(left - 30.0f, top + 423.0f); // close waypoint window
+        constexpr float tabX[] = {395, 519, 643, 767, 891};
+        constexpr float rowY[] = {210, 281, 351, 422, 493, 564, 635, 705, 775};
+        for (float x : tabX) addRef(x, 89);
+        for (float y : rowY) addRef(383, y);
+        addRef(897, 865); // close waypoint window
     }
 
     if (state.quickSkillsOpen()) {
@@ -281,9 +298,8 @@ FocusPoint inventoryFocus(const ModState &state, float x, float y, int direction
 FocusPoint skillTreeFocus(const ModState &state, float x, float y, int direction = -1) {
     std::vector<FocusPoint> points;
     for (const auto &point : state.skillFocusPoints) points.push_back({point.x, point.y});
-    const float left = state.gameWidth / 2.0f;
-    const float top = (state.gameHeight - 480) / 2.0f;
-    for (int tab = 0; tab < 3; ++tab) points.push_back({left + 295.0f, top + 151.0f + tab * 120.0f});
+    for (float y : {381.0f, 601.0f, 813.0f})
+        points.push_back({1508.0f * state.gameWidth / 1920.0f, y * state.gameHeight / 1080.0f});
     if (points.empty()) return {x, y};
     size_t current = 0;
     double nearest = std::numeric_limits<double>::max();

@@ -167,21 +167,90 @@ void parseAimTargets(const uint8_t *packet, size_t length, ModState &state) {
 }
 
 std::vector<FocusPoint> inventoryFocusPoints(const ModState &state) {
-    // Classic LoD panel: 320 x 432, centred vertically in the game view.
-    // Coordinates follow the player's annotated inventory, including empty slots.
     const float left = state.gameWidth / 2.0f;
     const float top = (state.gameHeight - 480) / 2.0f;
     std::vector<FocusPoint> points;
-    const FocusPoint controls[] = {
-        {32,35}, {65,35}, {263,35}, {295,35}, // weapon set tabs
-        {46,104}, {276,104}, {162,33}, {219,47}, {162,121},
-        {46,207}, {105,191}, {162,191}, {219,191}, {276,207},
-        {34,403}, {92,403} // close and gold button
+    auto add = [&points](float x, float y) {
+        for (const auto &point : points)
+            if (std::abs(point.x - x) < 0.5f && std::abs(point.y - y) < 0.5f) return;
+        points.push_back({x, y});
     };
-    for (auto p : controls) points.push_back({left + p.x, top + p.y});
-    for (int row = 0; row < 4; ++row)
-        for (int col = 0; col < 10; ++col)
-            points.push_back({left + 31.0f + col * 29, top + 269.5f + row * 29});
+    const uint64_t flags = state.uiFlags;
+    const auto open = [flags](unsigned index) { return (flags & (uint64_t{1} << index)) != 0; };
+
+    if (open(1)) {
+        // Keep the established player inventory and equipment focus map unchanged.
+        const FocusPoint controls[] = {
+            {32,35}, {65,35}, {263,35}, {295,35},
+            {46,104}, {276,104}, {162,33}, {219,47}, {162,121},
+            {46,207}, {105,191}, {162,191}, {219,191}, {276,207},
+            {34,403}, {92,403}
+        };
+        for (auto p : controls) add(left + p.x, top + p.y);
+        for (int row = 0; row < 4; ++row)
+            for (int col = 0; col < 10; ++col)
+                add(left + 31.0f + col * 29, top + 269.5f + row * 29);
+        // The belt is part of the in-game HUD, but remains reachable while the inventory is open.
+        for (int slot = 0; slot < 4; ++slot)
+            add(left + 50.0f + slot * 31.0f, state.gameHeight - 20.0f);
+    }
+
+    if (open(25)) {
+        // Stash grid: six columns by eight rows, using the game's left panel.
+        for (int row = 0; row < 8; ++row)
+            for (int col = 0; col < 6; ++col)
+                add(left - 248.0f + col * 31.0f, top + 78.0f + row * 32.5f);
+        add(left - 252.0f, top + 12.0f); // stash gold control
+        add(left - 34.0f, top + 403.0f); // close stash
+    }
+
+    if (open(12) || open(23)) {
+        const float tabX[] = {left - 305, left - 213, left - 128, left - 41};
+        for (float x : tabX) add(x, top + 17); // shop tabs
+        for (int row = 0; row < 8; ++row)
+            for (int col = 0; col < 8; ++col)
+                add(left - 307.0f + col * 39.0f, top + 60.0f + row * 41.0f);
+        for (int i = 0; i < 4; ++i) add(left - 202.0f + i * 55.0f, top + 423.0f);
+    }
+
+    if (open(2)) {
+        const float statY[] = {top + 76, top + 146, top + 228, top + 312};
+        for (float y : statY) add(left - 193.0f, y); // four attribute allocation buttons
+        add(left - 187.0f, top + 423.0f); // close character sheet
+    }
+
+    if (open(4)) {
+        // Skill icons come from SkillDesc and the game's own column/row hit-test API.
+        const auto tree = state.skillFocusPoints;
+        for (const auto &point : tree) add(point.x, point.y);
+        // The three class-tree tabs occupy the right edge of the skill panel.
+        for (int tab = 0; tab < 3; ++tab)
+            add(left + 295.0f, top + 151.0f + tab * 120.0f);
+    }
+
+    if (open(15) || open(17)) {
+        const float tabX[] = {left - 302, left - 235, left - 165, left - 97, left - 30};
+        for (float x : tabX) add(x, top + 18.0f);
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 3; ++col)
+                add(left - 277.0f + col * 96.0f, top + 78.0f + row * 102.0f);
+        add(left - 85.0f, top + 423.0f);
+        add(left - 28.0f, top + 423.0f);
+    }
+
+    if (open(20)) {
+        const float tabX[] = {left - 302, left - 235, left - 165, left - 97, left - 30};
+        for (float x : tabX) add(x, top + 18.0f);
+        for (int row = 0; row < 9; ++row) add(left - 177.0f, top + 78.0f + row * 39.0f);
+        add(left - 30.0f, top + 423.0f); // close waypoint window
+    }
+
+    if (state.quickSkillsOpen()) {
+        const float x1 = state.gameWidth - 215.0f, x2 = state.gameWidth - 170.0f, x3 = state.gameWidth - 125.0f;
+        const float y1 = state.gameHeight - 238.0f, y2 = state.gameHeight - 190.0f, y3 = state.gameHeight - 142.0f;
+        add(x2, y1); add(x3, y1); add(x3, y2);
+        add(x1, y3); add(x2, y3); add(x3, y3);
+    }
     return points;
 }
 
@@ -210,21 +279,25 @@ FocusPoint inventoryFocus(const ModState &state, float x, float y, int direction
 }
 
 FocusPoint skillTreeFocus(const ModState &state, float x, float y, int direction = -1) {
-    if (state.skillFocusPoints.empty()) return {x, y};
+    std::vector<FocusPoint> points;
+    for (const auto &point : state.skillFocusPoints) points.push_back({point.x, point.y});
+    const float left = state.gameWidth / 2.0f;
+    const float top = (state.gameHeight - 480) / 2.0f;
+    for (int tab = 0; tab < 3; ++tab) points.push_back({left + 295.0f, top + 151.0f + tab * 120.0f});
+    if (points.empty()) return {x, y};
     size_t current = 0;
     double nearest = std::numeric_limits<double>::max();
-    for (size_t n = 0; n < state.skillFocusPoints.size(); ++n) {
-        const auto &point = state.skillFocusPoints[n];
-        const double d = std::hypot(point.x - x, point.y - y);
+    for (size_t n = 0; n < points.size(); ++n) {
+        const double d = std::hypot(points[n].x - x, points[n].y - y);
         if (d < nearest) nearest = d, current = n;
     }
-    if (direction < 0) return {state.skillFocusPoints[current].x, state.skillFocusPoints[current].y};
+    if (direction < 0) return points[current];
     const int dx[] = {0, 0, -1, 1}, dy[] = {-1, 1, 0, 0};
     size_t next = current;
     double best = std::numeric_limits<double>::max();
-    const auto &origin = state.skillFocusPoints[current];
-    for (size_t n = 0; n < state.skillFocusPoints.size(); ++n) {
-        const auto &point = state.skillFocusPoints[n];
+    const auto &origin = points[current];
+    for (size_t n = 0; n < points.size(); ++n) {
+        const auto &point = points[n];
         const float xdiff = point.x - origin.x, ydiff = point.y - origin.y;
         const double along = xdiff * dx[direction] + ydiff * dy[direction];
         const double across = std::abs(xdiff * dy[direction] - ydiff * dx[direction]);
@@ -232,7 +305,7 @@ FocusPoint skillTreeFocus(const ModState &state, float x, float y, int direction
         const double score = along + across * 3.0;
         if (score < best) best = score, next = n;
     }
-    return {state.skillFocusPoints[next].x, state.skillFocusPoints[next].y};
+    return points[next];
 }
 
 FocusPoint uiControlFocus(const ModState &state, float x, float y, int direction = -1) {
@@ -592,7 +665,7 @@ void Gamepad::run() {
                 cursorX = std::clamp(static_cast<float>(gameX * sx), 0.0f, static_cast<float>(displayWidth - 1));
                 cursorY = std::clamp(static_cast<float>(gameY * sy), 0.0f, static_cast<float>(displayHeight - 1));
                 if (modState.skillTreeOpen()) skillTreeCursorPending = true;
-                if (modState.uiFlags & (uint64_t{1} << 1)) {
+                if (!inventoryFocusPoints(modState).empty()) {
                     const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy);
                     cursorX = focus.x * sx;
                     cursorY = focus.y * sy;
@@ -919,7 +992,7 @@ void Gamepad::run() {
                 else if (pointerMode) {
                     const float displayW = static_cast<float>(DisplayWidth(display, DefaultScreen(display)));
                     const float displayH = static_cast<float>(DisplayHeight(display, DefaultScreen(display)));
-                    if (stateFresh && (modState.uiFlags & (uint64_t{1} << 1))) {
+                    if (stateFresh && !inventoryFocusPoints(modState).empty()) {
                         const float sx = displayW / std::max(1, modState.gameWidth);
                         const float sy = displayH / std::max(1, modState.gameHeight);
                         const auto focus = inventoryFocus(modState, cursorX / sx, cursorY / sy, i);

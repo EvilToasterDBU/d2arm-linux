@@ -185,8 +185,8 @@
 #define ORD_GetLevelDef         10087
 #define ORD_GetObjectTxt        10319
 #define ORD_DrawText            10076
-#define ORD_LoadCellFile        10111
-#define ORD_DrawCelContext      10041
+#define ORD_LoadCellFile        10023
+#define ORD_DrawCelContext      10042
 #define ORD_GetTextWidth        10150
 #define ORD_SetTextSize         10047
 #define ORD_GetUnitStat         10550
